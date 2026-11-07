@@ -125,6 +125,20 @@ law copy_in_refused:
 # an Error the server could have sent.
 law forged_scram_refused:
   {S.replies(S.receive(S.Conn{F.new(), S.Session{0, A.Login.Verify{B.utf8("BBBB")}, Nil{},
-      S.Run{True{}, 0, 0, True{}, False{}}, Nil{}, Nil{}, Nil{}, Nil{}}},
+      S.Run{True{}, 0, 0, True{}, False{}}, Nil{}, Nil{}, Nil{}, S.Log{Nil{}, 0, Nil{}}}},
       [82, 0, 0, 0, 14, 0, 0, 0, 12, 118, 61, 65, 65, 65, 65]))
     == [S.Reply.Refused{"the server's SCRAM signature is wrong"}] : List<&2, S.Reply>}
+
+# Chunks of replies with rows among them, oldest chunk first and each
+# newest-first, as the session logs them; for decode_keeps_order.
+def mixed() -> List<&2, List<&2, S.Item>>:
+  [[S.Item.Row{[W.Field{"n", 23}], [Some{[49]}]}, S.Item.Reply{S.Reply.Columns{[W.Field{"n", 23}]}}],
+    [S.Item.Row{[W.Field{"n", 23}], [None{}]}, S.Item.Row{[W.Field{"n", 23}], [Some{[50]}]}],
+    [S.Item.Reply{S.Reply.Complete{"SELECT 3"}}],
+    [S.Item.Reply{S.Reply.Complete{"SELECT 1"}}, S.Item.Row{[W.Field{"t", 25}], [Some{[104, 105]}]}]]
+
+# LAW: decoding chunks in parallel lanes (8 here, some empty) gives exactly
+# the replies, in exactly the order, that decoding them one by one does.
+law decode_keeps_order:
+  {List.concat(&2, S.Reply, S.decode(3n, S.deal(mixed())))
+    == List.concat(&2, S.Reply, S.chunks(mixed())) : List<&2, S.Reply>}

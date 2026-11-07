@@ -55,3 +55,6 @@ def Laws.copy_in_refused():
 
 def Laws.forged_scram_refused():
   {==}
+
+def Laws.decode_keeps_order():
+  {==}

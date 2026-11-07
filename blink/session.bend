@@ -35,6 +35,27 @@ type Reply is Data:
   Reply.Refused{reason: String}
   Reply.Closed{reason: String}
 
+# A reply as the session keeps it: a row stays raw cells until the caller
+# asks for the replies, which decodes them all at once, in parallel.
+type Item is Data:
+  Item.Reply{r: Reply}
+  Item.Row{fields: List<&2, W.Field>, cells: List<&2, Maybe<&2, List<&2, U32>>>}
+
+# Every item so far, in chunks of up to 1024, so that decoding can split
+# them among lanes without a pass over every row. chunk is the newest, with
+# size items; chunks are the full ones. All newest-first.
+type Log is Data:
+  Log{chunk: List<&2, Item>, size: U32, chunks: List<&2, List<&2, Item>>}
+
+def push(l: Log, i: Item) -> Log:
+  match l:
+    case Log{chunk, +size, chunks}:
+      match size:
+        case 1024:
+          Log{[i], 1, chunk <> chunks}
+        case _:
+          Log{i <> chunk, (size + 1 : U32), chunks}
+
 # The running query: whether it is a simple query, its batch size (0 for all rows at once), its timeout,
 # whether its Sync is sent (the server then answers ReadyForQuery), and
 # whether it was cancelled.
@@ -45,15 +66,15 @@ type Run is Data:
 # login is where authentication stands; key is the CancelRequest the server's
 # BackendKeyData allows (empty until then); fields are the running
 # statement's columns. out is what the shell hasn't sent yet; replies are
-# every reply so far, newest-first.
+# every reply so far, newest-first, rows still undecoded.
 type Session is Data:
   Session{phase: U32, login: A.Login, queue: List<&2, Query>, run: Run, key: List<&2, U32>,
-    fields: List<&2, W.Field>, out: List<&2, U32>, replies: List<&2, Reply>}
+    fields: List<&2, W.Field>, out: List<&2, U32>, replies: Log}
 
 def reply(s: Session, r: Reply) -> Session:
   match s:
     case Session{phase, login, queue, run, key, fields, out, replies}:
-      Session{phase, login, queue, run, key, fields, out, r <> replies}
+      Session{phase, login, queue, run, key, fields, out, push(replies, Item.Reply{r})}
 
 # Sync ends a batched query, and every extended query after an error: the
 # server skips everything up to it.
@@ -98,7 +119,7 @@ def start(q: Query) -> Run & List<&2, U32>:
         List.concat(&2, U32, [W.parse(sql), W.bind(params), W.describe(), W.execute(fetch), ending(fetch)]))
 
 def started(p: Run & List<&2, U32>, login: A.Login, queue: List<&2, Query>, key: List<&2, U32>,
-  out: List<&2, U32>, replies: List<&2, Reply>) -> Session:
+  out: List<&2, U32>, replies: Log) -> Session:
   (run, bytes) = p
   Session{1, login, queue, run, key, Nil{}, List.append(&2, U32, out, bytes), replies}
 
@@ -123,9 +144,9 @@ def error(s: Session, r: Reply) -> Session:
     case Session{+phase, login, queue, run, key, fields, out, replies}:
       match phase:
         case 0:
-          Session{3, login, queue, run, key, fields, out, r <> replies}
+          Session{3, login, queue, run, key, fields, out, push(replies, Item.Reply{r})}
         case _:
-          sync(Session{phase, login, queue, run, key, fields, out, r <> replies})
+          sync(Session{phase, login, queue, run, key, fields, out, push(replies, Item.Reply{r})})
 
 # An authentication request: send auth.bend's answer, or fail the session.
 def auth(s: Session, a: A.Answer) -> Session:
@@ -135,7 +156,7 @@ def auth(s: Session, a: A.Answer) -> Session:
         case A.Answer.Send{login, bytes}:
           Session{0, login, queue, run, key, fields, List.append(&2, U32, out, bytes), replies}
         case A.Answer.Fail{message}:
-          Session{3, A.Login.Done{}, queue, run, key, fields, out, Reply.Refused{message} <> replies}
+          Session{3, A.Login.Done{}, queue, run, key, fields, out, push(replies, Item.Reply{Reply.Refused{message}})}
 
 def keyed(s: Session, pid: U32, secret: U32) -> Session:
   match s:
@@ -145,12 +166,12 @@ def keyed(s: Session, pid: U32, secret: U32) -> Session:
 def columns(s: Session, +fs: List<&2, W.Field>) -> Session:
   match s:
     case Session{phase, login, queue, run, key, fields, out, replies}:
-      Session{phase, login, queue, run, key, fs, out, Reply.Columns{fs} <> replies}
+      Session{phase, login, queue, run, key, fs, out, push(replies, Item.Reply{Reply.Columns{fs}})}
 
 def row(s: Session, cells: List<&2, Maybe<&2, List<&2, U32>>>) -> Session:
   match s:
     case Session{phase, login, queue, run, key, +fields, out, replies}:
-      Session{phase, login, queue, run, key, fields, out, Reply.Row{R.record(fields, cells)} <> replies}
+      Session{phase, login, queue, run, key, fields, out, push(replies, Item.Row{fields, cells})}
 
 # COPY FROM STDIN wants data Blink can't send, so it refuses with CopyFail
 # and the server answers with an error. The server ignores a Sync sent
@@ -226,7 +247,7 @@ type Conn is Data:
 def connect(+user: String, password: String, database: String, nonce: List<&2, U32>,
   queue: List<&2, Query>) -> Conn:
   Conn{F.new(), Session{0, A.Login.Start{user, password, nonce}, queue,
-    Run{True{}, 0, 0, True{}, False{}}, Nil{}, Nil{}, W.startup(user, database), Nil{}}}
+    Run{True{}, 0, 0, True{}, False{}}, Nil{}, Nil{}, W.startup(user, database), Log{Nil{}, 0, Nil{}}}}
 
 def receive.go(p: List<&2, F.Frame> & F.Rx, se: Session) -> Conn:
   (frames, rx) = p
@@ -244,17 +265,80 @@ def take(c: Conn) -> List<&2, U32> & Conn:
     case Conn{rx, Session{phase, login, queue, run, key, fields, out, replies}}:
       (out, Conn{rx, Session{phase, login, queue, run, key, fields, Nil{}, replies}})
 
-# Every reply so far, oldest first.
+# ---- decoding the replies
+
+def item(i: Item) -> Reply:
+  match i:
+    case Item.Reply{r}:
+      r
+    case Item.Row{fields, cells}:
+      Reply.Row{R.record(fields, cells)}
+
+def items(xs: List<&2, Item>) -> List<&2, Reply>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case i <> rest:
+      item(i) <> items(rest)
+
+def deal.cons(c: List<&2, Item>, p: List<&2, List<&2, Item>> & List<&2, List<&2, Item>>) ->
+  List<&2, List<&2, Item>> & List<&2, List<&2, Item>>:
+  (a, b) = p
+  (c <> b, a)
+
+# The 1st, 3rd, 5th... chunks and the 2nd, 4th...: two even halves.
+def deal(cs: List<&2, List<&2, Item>>) -> List<&2, List<&2, Item>> & List<&2, List<&2, Item>>:
+  match cs:
+    case Nil{}:
+      (Nil{}, Nil{})
+    case c <> rest:
+      deal.cons(c, deal(rest))
+
+# deal undone: the halves' chunks back in their order.
+def merge(a: List<&2, List<&2, Reply>>, b: List<&2, List<&2, Reply>>) -> List<&2, List<&2, Reply>>:
+  match a b:
+    case x <> t y <> u:
+      x <> y <> merge(t, u)
+    case x <> t Nil{}:
+      x <> t
+    case Nil{} y <> u:
+      y <> u
+    case Nil{} Nil{}:
+      Nil{}
+
+# Each chunk (newest-first) as its replies, oldest first.
+def chunks(cs: List<&2, List<&2, Item>>) -> List<&2, List<&2, Reply>>:
+  match cs:
+    case Nil{}:
+      Nil{}
+    case c <> rest:
+      items(List.reverse(&2, Item, c)) <> chunks(rest)
+
+# Decodes dealt halves of the chunks in 2^depth lanes. A row decodes alone,
+# so on a native build the lanes run in parallel (Bend's parallel call:
+# a b = f() g()).
+def decode(depth: Nat, p: List<&2, List<&2, Item>> & List<&2, List<&2, Item>>) -> List<&2, List<&2, Reply>>:
+  match depth:
+    case 0n:
+      (l, r) = p
+      merge(chunks(l), chunks(r))
+    case 1n+d:
+      (l, r) = p
+      +e = d
+      a b = decode(e, deal(l)) decode(e, deal(r))
+      merge(a, b)
+
+# Every reply so far, oldest first, rows decoded in 32 lanes.
 def replies(c: Conn) -> List<&2, Reply>:
   match c:
-    case Conn{rx, Session{phase, login, queue, run, key, fields, out, rs}}:
-      List.reverse(&2, Reply, rs)
+    case Conn{rx, Session{phase, login, queue, run, key, fields, out, Log{chunk, size, cs}}}:
+      List.concat(&2, Reply, decode(5n, deal(List.reverse(&2, List<&2, Item>, chunk <> cs))))
 
 # The socket failed or closed under the session.
 def closed(c: Conn, reason: String) -> Conn:
   match c:
     case Conn{rx, Session{phase, login, queue, run, key, fields, out, rs}}:
-      Conn{rx, Session{3, login, queue, run, key, fields, out, Reply.Closed{reason} <> rs}}
+      Conn{rx, Session{3, login, queue, run, key, fields, out, push(rs, Item.Reply{Reply.Closed{reason}})}}
 
 # Whether the session still wants the socket.
 def open(c: Conn) -> Bool:
@@ -290,7 +374,7 @@ def cancel(c: Conn) -> List<&2, U32> & Conn:
             fields, out, replies}}, "no answer after the cancel"))
         case False{}:
           (key, Conn{rx, Session{phase, login, queue, Run{simple, fetch, timeout, synced, True{}}, key, fields, out,
-            Reply.Cancelled{} <> replies}})
+            push(replies, Item.Reply{Reply.Cancelled{}})}})
 
 # ---- showing replies, one line each
 
