@@ -8,7 +8,8 @@ A PostgreSQL driver in [Bend](https://github.com/bendlang/bend), modelled on
 [Clunk](https://github.com/duanebester/clunk) and
 [Skunk](https://github.com/typelevel/skunk). It needs nothing but Bend: no
 libpq, no packages beyond Base. It's an early baseline: local TCP, password
-auth (trust, cleartext, MD5, SCRAM-SHA-256) and simple queries.
+auth (trust, cleartext, MD5, SCRAM-SHA-256), simple queries, and extended
+ones with parameters, batched rows and cancellation.
 
 ## Design: bytes → messages → records are pure transforms
 
@@ -29,7 +30,7 @@ auth (trust, cleartext, MD5, SCRAM-SHA-256) and simple queries.
 | [`auth`](blink/auth.bend) | Each auth request's answer, SCRAM included: `answer(code, data, login)` |
 | [`rows`](blink/rows.bend) | Cells → values by type OID; untyped records, and typed rows where `Row(schema)` computes the Bend type |
 | [`session`](blink/session.bend) | The protocol state machine: `react(Session, Backend)`. `Conn` adds the framer, so a read is `receive(conn, bytes)`, then `take` the bytes to send |
-| [`io`](blink/io.bend) | The only effects: `run(host, port, user, password, database, queries)` |
+| [`io`](blink/io.bend) | The only effects: `run(host, port, user, password, database, queries)`, and a CancelRequest when a query times out |
 
 [`LAWS.bend`](LAWS.bend) states facts about the pure core and
 [`PROOF.bend`](PROOF.bend) proves them; Bend's compiler checks both. For
@@ -57,6 +58,10 @@ errors go to stderr with exit code 1:
 bend examples/query.bend "SELECT 1 AS one, 'héllo' AS t, NULL AS n, true AS b"
 # 1|héllo||t
 bend examples/query.bend -- --replies "SELECT 1 AS a"   # every reply
+bend examples/query.bend -- --param 41 --null 'SELECT $1::int4 + 1, $2::text IS NULL'
+# 42|t
+bend examples/query.bend -- --fetch 1000 "SELECT * FROM generate_series(1, 100000)"   # 1000 rows per batch
+bend examples/query.bend -- --timeout 500 "SELECT pg_sleep(60)"   # cancelled after 0.5 s of silence
 mkdir -p build && bend examples/query.bend -o build/query && ./build/query "SELECT now()"   # native
 ```
 
@@ -69,13 +74,21 @@ import ./blink/session.bend as S
 
 def main() -> IO(Unit):
   do IO<Unit>:
-    rs : List<&2, S.Reply> <- Blink.run("127.0.0.1", 5432, "postgres", "blink", "postgres", ["SELECT 1 AS one"])
+    rs : List<&2, S.Reply> <- Blink.run("127.0.0.1", 5432, "postgres", "blink", "postgres", [
+      S.Query.Simple{"SELECT 1 AS one; SELECT 2 AS two"},
+      S.Query.Extended{"SELECT $1::text AS t", [Some{"héllo"}], 0, 0}])
     List.for_each(~&2, ~S.Reply, ~(r => IO.print(S.show(r))), rs)
 ```
 
+A `Simple` query may hold several statements. An `Extended{sql, params,
+fetch, timeout}` is one statement, with `params` as `$1, $2…` (`None` is
+NULL), never spliced into the SQL. With `fetch > 0`, rows come `fetch` at a
+time. With `timeout > 0`, a server that stays silent that long gets a
+CancelRequest, and no more batches are asked for.
+
 `run` returns the replies in order (`Columns`, a `Row` per row, `Complete`
-per statement); an `Error` ends only its own query, and `Closed` means the
-connection failed. [`examples/cities.bend`](examples/cities.bend) is a complete
+per statement); an `Error` ends only its own query, `Cancelled` marks a
+timeout, and `Closed` means the connection failed. [`examples/cities.bend`](examples/cities.bend) is a complete
 program: it matches rows by shape and folds over them.
 
 ## Test
@@ -97,7 +110,9 @@ re-records the session as `PGUSER=trusty PGDATABASE=world`.
 
 - IPv4 TCP only: Bend has no DNS, TLS, IPv6 or Unix sockets.
 - SCRAM without SASLprep or channel binding (as libpq over plain TCP); use ASCII passwords.
-- Simple query protocol only: no parameters, batches, cancellation or LISTEN/NOTIFY.
+- Extended queries use the unnamed statement (no prepared-statement cache), text format only.
+- Cancellation is by timeout: there's no streaming yet, so nothing else could fire it.
+- No LISTEN/NOTIFY.
 - One connection per `run`, all replies held in memory; no streaming or pool.
 - Values are text except bool and int2/int4 (Bend has no signed ints, U64 or F64 yet).
 - About 7× slower than `psql` natively: 100k rows in 0.8 s.
@@ -106,8 +121,8 @@ re-records the session as `PGUSER=trusty PGDATABASE=world`.
 
 ## Next
 
-The extended protocol, streaming replies over a `Chan`, a pool,
-LISTEN/NOTIFY, then speed.
+Streaming replies over a `Chan` (so a reader can cancel or stop early), a
+pool, LISTEN/NOTIFY, then speed.
 
 ## Credits
 

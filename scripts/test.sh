@@ -69,19 +69,40 @@ else
     if ! command -v psql >/dev/null 2>&1; then
       printf 'skip  live: %s (no psql to compare with)\n' "$name"; return
     fi
-    if ./build/query "$@" >build/blink.out && psql_each "$@" >build/psql.out \
+    # shellcheck disable=SC2086 # flags: Blink's own options, word-split
+    if ./build/query $flags "$@" >build/blink.out && psql_each "$@" >build/psql.out \
       && diff -u build/psql.out build/blink.out >/dev/null; then
       pass "live: $name ($(wc -l <build/blink.out | tr -d ' ') rows, same as psql)"
     else
       diff -u build/psql.out build/blink.out | head -20; fail "live: $name"
     fi
   }
+  flags=
   same "types and NULL" "SELECT 1::int4 AS one, 'héllo'::text AS t, NULL::text AS n, true AS b, -42 AS neg"
   same "edges" "SELECT (-2147483648)::int4, 32767::int2, 9223372036854775807::int8, 1.5::float8, '2026-11-07'::date, '\\x00ff'::bytea, ''::text"
   same "two statements" "SELECT 1 AS a; SELECT 'x' AS b, NULL AS c"
   same "two queries" "SELECT 'first'" "SELECT 'second'"
   same "10,000 rows" "SELECT g, 'city-' || g, g % 3 = 0 FROM generate_series(1, 10000) g"
   same "catalog" "SELECT * FROM pg_type ORDER BY oid LIMIT 100"
+  flags="--fetch 333"
+  same "10,000 rows, 333 at a time" "SELECT g, 'city-' || g, g % 3 = 0 FROM generate_series(1, 10000) g"
+  flags=
+  # shellcheck disable=SC2016 # $1 is Postgres's, not the shell's
+  if [ "$(./build/query --param 41 --param 'héllo 🐘' --null --param "'); DROP TABLE x; --" \
+    'SELECT $1::int4 + 1, $2::text, $3::text IS NULL, $4::text')" = "42|héllo 🐘|t|'); DROP TABLE x; --" ]; then
+    pass "live: parameters, NULL and UTF-8, never spliced into the SQL"
+  else
+    fail "live: parameters"
+  fi
+  start=$(date +%s)
+  if ./build/query --timeout 300 "SELECT pg_sleep(30)" "SELECT 'next'" >build/blink.out 2>build/blink.err; then
+    fail "live: a cancelled query exits 1"
+  elif [ $(($(date +%s) - start)) -lt 10 ] && grep -qx cancelled build/blink.err \
+    && grep -q '^ERROR 57014' build/blink.err && grep -qx next build/blink.out; then
+    pass "live: a timeout cancels the query on the server; the next one runs"
+  else
+    cat build/blink.err; fail "live: cancel"
+  fi
   if ./build/query "SELECT 1/0" "SELECT 'still runs'" >build/blink.out 2>build/blink.err; then
     fail "live: an error exits 1"
   elif grep -q '22012: division by zero' build/blink.err && grep -qx 'still runs' build/blink.out; then

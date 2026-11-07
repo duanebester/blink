@@ -60,7 +60,37 @@ law scram_not_skipped:
 # nothing to send but the startup message.
 law failed_login_stays_failed:
   {Pair.fst(List<&2, U32>, S.Conn, S.take(S.receive(
-    S.connect("u", "pw", "db", Nil{}, ["SELECT 1"]),
+    S.connect("u", "pw", "db", Nil{}, [S.Query.Simple{"SELECT 1"}]),
     List.concat(&2, U32, [[82, 0, 0, 0, 8, 0, 0, 0, 12], [82, 0, 0, 0, 8, 0, 0, 0, 0],
       [90, 0, 0, 0, 5, 73]]))))
     == W.startup("u", "db") : List<&2, U32>}
+
+# LAW: an extended query is Parse, Bind (UTF-8 lengths in bytes, NULL as
+# -1), Describe, Execute for one batch, and Flush, which keeps the portal
+# open. Bytes from Python's struct.
+law extended_bytes:
+  {Pair.snd(S.Run, List<&2, U32>, S.start(S.Query.Extended{"SELECT $1, $2", [Some{"é"}, None{}], 2, 100}))
+    == [80, 0, 0, 0, 21, 0, 83, 69, 76, 69, 67, 84, 32, 36, 49, 44, 32, 36, 50, 0, 0, 0,
+      66, 0, 0, 0, 22, 0, 0, 0, 0, 0, 2, 0, 0, 0, 2, 195, 169, 255, 255, 255, 255, 0, 0,
+      68, 0, 0, 0, 6, 80, 0, 69, 0, 0, 0, 9, 0, 0, 0, 0, 2, 72, 0, 0, 0, 4] : List<&2, U32>}
+
+# A session logged in (trust) with key 7/9, running a query 2 rows at a time.
+def batching() -> S.Conn:
+  Pair.snd(List<&2, U32>, S.Conn, S.take(S.receive(
+    S.connect("u", "", "db", Nil{}, [S.Query.Extended{"SELECT 1", [], 2, 100}]),
+    List.concat(&2, U32, [[82, 0, 0, 0, 8, 0, 0, 0, 0], [75, 0, 0, 0, 12, 0, 0, 0, 7, 0, 0, 0, 9],
+      [90, 0, 0, 0, 5, 73]]))))
+
+# LAW: a batch done (PortalSuspended), the session asks for the next.
+law batches_continue:
+  {Pair.fst(List<&2, U32>, S.Conn, S.take(S.receive(batching(), [115, 0, 0, 0, 4])))
+    == List.append(&2, U32, W.execute(2), W.flush()) : List<&2, U32>}
+
+# LAW: once cancelled, it asks for no more, but closes the portal and syncs;
+# the cancel itself is a CancelRequest with the server's key.
+law cancel_stops_batches:
+  {(Pair.fst(List<&2, U32>, S.Conn, S.cancel(batching())),
+    Pair.fst(List<&2, U32>, S.Conn, S.take(S.receive(Pair.snd(List<&2, U32>, S.Conn, S.cancel(batching())),
+      [115, 0, 0, 0, 4]))))
+    == ([0, 0, 0, 16, 4, 210, 22, 46, 0, 0, 0, 7, 0, 0, 0, 9], [67, 0, 0, 0, 6, 80, 0, 83, 0, 0, 0, 4])
+    : List<&2, U32> & List<&2, U32>}

@@ -5,4 +5,19 @@ error ERROR 22012 division by zero
 columns a:25
 row after
 complete SELECT 1
+columns n:23 t:25 isnull:16
+row 42|héllo 🐘|t
+complete SELECT 1
+columns g:23
+row 1
+row 2
+row 3
+row 4
+row 5
+complete SELECT 1
+columns q:23
+row 0
+row 1
+error ERROR 22012 division by zero
+error ERROR 22P02 invalid input syntax for type integer: "x"
 client bytes match

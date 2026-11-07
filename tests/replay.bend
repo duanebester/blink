@@ -33,8 +33,19 @@ def go(fuel: Nat, r: Replay, c: B.Cut) -> Replay:
             case h <> t:
               go(f, chunk(r, bytes), B.split(h <> t, 7n))
 
+# capture.py's QUERIES and EXTENDED.
+def queries() -> List<&2, S.Query>:
+  [S.Query.Simple{"SELECT 1::int4 AS one, 'héllo'::text AS t, NULL::text AS n, true AS b, -42 AS neg; SELECT 1/0"},
+    S.Query.Simple{"SELECT 'after' AS a"},
+    S.Query.Extended{"SELECT $1::int4 + 1 AS n, $2::text AS t, $3::text IS NULL AS isnull",
+      [Some{"41"}, Some{"héllo 🐘"}, None{}], 0, 0},
+    S.Query.Extended{"SELECT g FROM generate_series(1, 5) g", [], 2, 0},
+    S.Query.Extended{"SELECT 1/(3-g) AS q FROM generate_series(1, 5) g", [], 2, 0},
+    S.Query.Extended{"SELECT $1::int4", [Some{"x"}], 2, 0},
+    S.Query.Extended{"", [], 2, 0}]
+
 def replay(+server: List<&2, U32>) -> Replay:
-  go(List.length(&2, U32, server), Replay{S.connect("trusty", "", "world", Nil{}, ["SELECT 1::int4 AS one, 'héllo'::text AS t, NULL::text AS n, true AS b, -42 AS neg; SELECT 1/0", "SELECT 'after' AS a"]), Nil{}},
+  go(List.length(&2, U32, server), Replay{S.connect("trusty", "", "world", Nil{}, queries()), Nil{}},
     B.split(server, 7n))
 
 def report(r: Replay, client: List<&2, U32>) -> IO(Unit):

@@ -1,6 +1,7 @@
 # The IO shell: the only effectful part of Blink. It connects, then loops:
 # receive bytes, hand them to the pure connection (session.bend), send what
-# it asks for. It decides nothing about the protocol.
+# it asks for, and, when a query's deadline passes, sends the session's
+# CancelRequest on a second connection. It decides nothing about the protocol.
 import Base
 import ./bytes.bend as B
 import ./crypto.bend as C
@@ -50,22 +51,71 @@ def got(m: Socket & Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>>, c: S
     case Fail{(code, message)}:
       done(s, S.closed(c, message))
 
+# CancelRequest goes on a connection of its own, which the server closes.
+def interrupt.sent(m: Socket & Result<&1, &1, (U32 & String) & List<&2, U32>, Unit>) -> IO(Unit):
+  (s, r) = m
+  Socket.close(s)
+
+def interrupt.connected(r: Result<&1, &1, U32 & String, Socket>, bytes: List<&2, U32>) -> IO(Unit):
+  match r:
+    case Fail{e}:
+      IO.pure(Unit, Unit{})
+    case Done{s}:
+      do IO<Unit>:
+        m : Socket & Result<&1, &1, (U32 & String) & List<&2, U32>, Unit> <- TCP.send_bytes(s, bytes)
+        interrupt.sent(m)
+
+def interrupt(host: String, port: U32, bytes: List<&2, U32>) -> IO(Unit):
+  match bytes:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case b <> rest:
+      do IO<Unit>:
+        r : Result<&1, &1, U32 & String, Socket> <- TCP.connect(host, port)
+        interrupt.connected(r, b <> rest)
+
+def cancelled(host: String, port: U32, s: Socket, p: List<&2, U32> & S.Conn, k: Next()) -> IO(Replies()):
+  (bytes, c) = p
+  do IO<Replies()>:
+    interrupt(host, port, bytes)
+    send(s, S.take(c), k)
+
+def polled(host: String, port: U32,
+  m: Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>>, Unit>,
+  c: S.Conn, k: Next()) -> IO(Replies()):
+  (s, p) = m
+  match p:
+    case Ready{r}:
+      got((s, r), c, k)
+    case Wait{u}:
+      cancelled(host, port, s, S.cancel(c), k)
+
+# A read, bounded by the running query's deadline if it has one.
+def read(+ms: U32, host: String, port: U32, s: Socket, c: S.Conn, k: Next()) -> IO(Replies()):
+  match ms:
+    case 0:
+      do IO<Replies()>:
+        m : Socket & Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>> <- TCP.recv_bytes(s, 65536)
+        got(m, c, k)
+    case _:
+      do IO<Replies()>:
+        m : Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>>, Unit> <- TCP.try_recv_bytes(s, 65536, ms)
+        polled(host, port, m, c, k)
+
 # One read per turn; the fuel only satisfies the termination check.
-def loop(fuel: Nat, s: Socket, c: S.Conn) -> IO(Replies()):
+def loop(fuel: Nat, +host: String, +port: U32, s: Socket, +c: S.Conn) -> IO(Replies()):
   match fuel:
     case 0n:
       done(s, S.closed(c, "out of fuel"))
     case 1n+f:
-      do IO<Replies()>:
-        m : Socket & Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>> <- TCP.recv_bytes(s, 65536)
-        got(m, c, s2 => c2 => loop(f, s2, c2))
+      read(S.deadline(c), host, port, s, c, s2 => c2 => loop(f, host, port, s2, c2))
 
-def connected(r: Result<&1, &1, U32 & String, Socket>, c: S.Conn) -> IO(Replies()):
+def connected(r: Result<&1, &1, U32 & String, Socket>, host: String, port: U32, c: S.Conn) -> IO(Replies()):
   match r:
     case Fail{(code, message)}:
       IO.pure(Replies(), [S.Reply.Closed{"connect failed: " ++ message}])
     case Done{s}:
-      send(s, S.take(c), s2 => c2 => loop(4294967295n, s2, c2))
+      send(s, S.take(c), s2 => c2 => loop(4294967295n, host, port, s2, c2))
 
 # n random words as bytes, for SCRAM's nonce.
 def random(n: Nat, acc: List<&2, U32>) -> IO(List<&2, U32>):
@@ -78,13 +128,13 @@ def random(n: Nat, acc: List<&2, U32>) -> IO(List<&2, U32>):
         random(p, List.append(&2, U32, B.be32(x), acc))
 
 # Connects to host (an IPv4 address) and port as user with password (which
-# trust ignores), runs each query in turn with the simple query protocol,
-# and answers every reply in order. A connection problem ends the list with
-# Reply.Closed, and a failed login with an Error.
-def run(host: String, port: U32, user: String, password: String, database: String,
-  queries: List<&2, String>) -> IO(Replies()):
+# trust ignores), runs each query in turn (see S.Query), and answers every
+# reply in order. A connection problem ends the list with Reply.Closed, and
+# a failed login with an Error.
+def run(+host: String, +port: U32, user: String, password: String, database: String,
+  queries: List<&2, S.Query>) -> IO(Replies()):
   do IO<Replies()>:
     bytes : List<&2, U32> <- random(5n, Nil{})
     r : Result<&1, &1, U32 & String, Socket> <- TCP.connect(host, port)
-    connected(r, S.connect(user, password, database,
+    connected(r, host, port, S.connect(user, password, database,
       C.base64(List.take(&2, U32, bytes, 18n)), queries))

@@ -37,3 +37,12 @@ def Laws.scram_not_skipped():
 
 def Laws.failed_login_stays_failed():
   {==}
+
+def Laws.extended_bytes():
+  {==}
+
+def Laws.batches_continue():
+  {==}
+
+def Laws.cancel_stops_batches():
+  {==}

@@ -1,5 +1,7 @@
 # Using Blink as a library: run queries, then match the replies by shape
-# and fold over them. Makes its own temporary table, so any database works.
+# and fold over them. Makes its own temporary table, so any database works;
+# fills it with parameters (Atlantis's population is NULL) and reads it back
+# 2 rows at a time.
 # Connects as examples/query.bend does (PGHOST, PGUSER, PGPASSWORD,
 # PGDATABASE).
 #
@@ -44,8 +46,10 @@ def main() -> IO(Unit):
     pw : String <- env("PGPASSWORD", "")
     db : String <- env("PGDATABASE", user)
     +rs : List<&2, S.Reply> <- Blink.run(host, 5432, user, pw, db, [
-      "CREATE TEMP TABLE city (name text, pop int4)",
-      "INSERT INTO city VALUES ('Tokyo', 13960000), ('São Paulo', 12330000), ('Zürich', 421878), ('Atlantis', NULL)",
-      "SELECT name, pop FROM city WHERE pop IS NOT NULL ORDER BY pop DESC"])
+      S.Query.Simple{"CREATE TEMP TABLE city (name text, pop int4)"},
+      S.Query.Extended{"INSERT INTO city VALUES ($1, $2), ($3, $4), ($5, $6), ($7, $8)",
+        [Some{"Tokyo"}, Some{"13960000"}, Some{"São Paulo"}, Some{"12330000"},
+          Some{"Zürich"}, Some{"421878"}, Some{"Atlantis"}, None{}], 0, 0},
+      S.Query.Extended{"SELECT name, pop FROM city WHERE pop IS NOT NULL ORDER BY pop DESC", [], 2, 0}])
     List.for_each(~&2, ~S.Reply, ~(r => line(r)), rs)
     IO.print("total: " ++ U32.show(List.foldl(~&2, ~S.Reply, ~U32, ~(a => r => total(a, r)), rs, 0)))

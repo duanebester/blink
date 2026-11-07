@@ -1,5 +1,5 @@
 # The wire protocol (v3): frontend messages -> bytes, and frames -> backend
-# messages. Pure. What startup, authentication and simple queries need.
+# messages. Pure. Startup, authentication, and simple and extended queries.
 import Base
 import ./bytes.bend as B
 import ./frame.bend as F
@@ -31,6 +31,62 @@ def sasl_initial(mechanism: String, +data: List<&2, U32>) -> List<&2, U32>:
 def sasl_response(data: List<&2, U32>) -> List<&2, U32>:
   112 <> sized(data)
 
+# ---- the extended protocol, on the unnamed statement and portal, all in
+# text format
+
+def be16(+n: U32) -> List<&2, U32>:
+  [((n >> 8n) .&. 255 : U32), (n .&. 255 : U32)]
+
+# 'P': parse sql; the server infers every parameter's type.
+def parse(sql: String) -> List<&2, U32>:
+  80 <> sized(List.concat(&2, U32, [[0], B.cstring(sql), [0, 0]]))
+
+# A parameter's length and bytes; -1 is NULL.
+def value(v: Maybe<&2, String>) -> List<&2, U32>:
+  match v:
+    case None{}:
+      [255, 255, 255, 255]
+    case Some{s}:
+      +bytes = B.utf8(s)
+      List.append(&2, U32, B.be32(U32.from_nat(List.length(&2, U32, bytes))), bytes)
+
+def values(vs: List<&2, Maybe<&2, String>>) -> List<&2, U32>:
+  match vs:
+    case Nil{}:
+      Nil{}
+    case v <> rest:
+      List.append(&2, U32, value(v), values(rest))
+
+# 'B': bind the params, as text, to the portal; rows come back as text too.
+def bind(+params: List<&2, Maybe<&2, String>>) -> List<&2, U32>:
+  66 <> sized(List.concat(&2, U32, [[0, 0, 0, 0],
+    be16(U32.from_nat(List.length(&2, Maybe<&2, String>, params))), values(params), [0, 0]]))
+
+# 'D' of the portal: its RowDescription, or NoData.
+def describe() -> List<&2, U32>:
+  [68, 0, 0, 0, 6, 80, 0]
+
+# 'E': run the portal for up to max rows; 0 is all of them.
+def execute(max: U32) -> List<&2, U32>:
+  69 <> sized(0 <> B.be32(max))
+
+# 'C' of the portal.
+def close() -> List<&2, U32>:
+  [67, 0, 0, 0, 6, 80, 0]
+
+# 'H': send what you have. Unlike Sync, it keeps the portal open.
+def flush() -> List<&2, U32>:
+  [72, 0, 0, 0, 4]
+
+# 'S': end the extended query; the server answers ReadyForQuery.
+def sync() -> List<&2, U32>:
+  [83, 0, 0, 0, 4]
+
+# CancelRequest, sent on a new connection with the key from
+# BackendKeyData: it has no tag, like the startup message.
+def cancel_request(pid: U32, secret: U32) -> List<&2, U32>:
+  List.concat(&2, U32, [[0, 0, 0, 16], B.be32(80877102), B.be32(pid), B.be32(secret)])
+
 # 'X': the polite goodbye before closing the socket.
 def terminate() -> List<&2, U32>:
   [88, 0, 0, 0, 4]
@@ -48,6 +104,8 @@ type Backend is Data:
   Backend.Columns{fields: List<&2, Field>}
   Backend.Row{cells: List<&2, Maybe<&2, List<&2, U32>>>}
   Backend.Complete{tag: String}
+  Backend.Suspended{}
+  Backend.Empty{}
   Backend.Error{severity: String, code: String, message: String}
   Backend.Notice{severity: String, code: String, message: String}
   Backend.Other{tag: U32}
@@ -214,5 +272,9 @@ def decode(f: F.Frame) -> Backend:
           error(fields(body))
         case 78:
           notice(fields(body))
+        case 115:
+          Backend.Suspended{}
+        case 73:
+          Backend.Empty{}
         case _:
           Backend.Other{tag}

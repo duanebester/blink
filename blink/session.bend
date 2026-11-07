@@ -1,6 +1,6 @@
 # The session: Clunk's protocol state machine as a pure function. Backend
 # messages go in; bytes to send and replies for the caller come out. It runs
-# a queue of simple queries, one at a time, then says goodbye. The IO shell
+# a queue of queries, one at a time, then says goodbye. The IO shell
 # (io.bend) only moves bytes between the socket and this.
 import Base
 import ./frame.bend as F
@@ -8,79 +8,178 @@ import ./wire.bend as W
 import ./auth.bend as A
 import ./rows.bend as R
 
-# What a caller sees, in order: the replies to its queries.
+# A query to run. Simple goes as one Query message and may hold several
+# statements. Extended is one statement through Parse, Bind and Execute:
+# params fill $1, $2... as text (None is NULL), never spliced into the SQL.
+# With fetch > 0 its rows come fetch at a time, each batch asked for after
+# the last. With timeout > 0, a server silent that many ms gets a
+# CancelRequest, and no more batches are asked for.
+type Query is Data:
+  Query.Simple{sql: String}
+  Query.Extended{sql: String, params: List<&2, Maybe<&2, String>>, fetch: U32, timeout: U32}
+
+# What a caller sees, in order: the replies to its queries. Cancelled is
+# Blink giving up on a query; the server's error for it may follow.
 type Reply is Data:
   Reply.Columns{fields: List<&2, W.Field>}
   Reply.Row{entries: List<&2, R.Entry>}
   Reply.Complete{tag: String}
   Reply.Error{severity: String, code: String, message: String}
   Reply.Notice{severity: String, code: String, message: String}
+  Reply.Cancelled{}
   Reply.Closed{reason: String}
 
+# The running query: its batch size (0 for all rows at once), its timeout,
+# whether its Sync is sent (the server then answers ReadyForQuery), and
+# whether it was cancelled.
+type Run is Data:
+  Run{fetch: U32, timeout: U32, synced: Bool, stopped: Bool}
+
 # phase 0 is startup, 1 a query running, 2 done (Terminate sent), 3 failed.
-# login is where authentication stands; fields are the running statement's
-# columns. out is what the shell hasn't
-# sent yet; replies are every reply so far, newest-first.
+# login is where authentication stands; key is the CancelRequest the server's
+# BackendKeyData allows (empty until then); fields are the running
+# statement's columns. out is what the shell hasn't sent yet; replies are
+# every reply so far, newest-first.
 type Session is Data:
-  Session{phase: U32, login: A.Login, queue: List<&2, String>, fields: List<&2, W.Field>,
-    out: List<&2, U32>, replies: List<&2, Reply>}
+  Session{phase: U32, login: A.Login, queue: List<&2, Query>, run: Run, key: List<&2, U32>,
+    fields: List<&2, W.Field>, out: List<&2, U32>, replies: List<&2, Reply>}
+
+def reply(s: Session, r: Reply) -> Session:
+  match s:
+    case Session{phase, login, queue, run, key, fields, out, replies}:
+      Session{phase, login, queue, run, key, fields, out, r <> replies}
+
+# Sync ends a batched query, and every extended query after an error: the
+# server skips everything up to it.
+def sync(s: Session) -> Session:
+  match s:
+    case Session{phase, login, queue, Run{fetch, timeout, synced, stopped}, key, fields, out, replies}:
+      match synced:
+        case True{}:
+          Session{phase, login, queue, Run{fetch, timeout, True{}, stopped}, key, fields, out, replies}
+        case False{}:
+          Session{phase, login, queue, Run{fetch, timeout, True{}, stopped}, key, fields,
+            List.append(&2, U32, out, W.sync()), replies}
+
+# A batch is done: ask for the next, or, once cancelled, close the portal.
+def suspended(s: Session) -> Session:
+  match s:
+    case Session{phase, login, queue, Run{+fetch, timeout, synced, stopped}, key, fields, out, replies}:
+      match stopped:
+        case True{}:
+          Session{phase, login, queue, Run{fetch, timeout, True{}, True{}}, key, fields,
+            List.concat(&2, U32, [out, W.close(), W.sync()]), replies}
+        case False{}:
+          Session{phase, login, queue, Run{fetch, timeout, synced, False{}}, key, fields,
+            List.concat(&2, U32, [out, W.execute(fetch), W.flush()]), replies}
+
+# A batched query flushes instead of syncing: Sync would end the implicit
+# transaction, and the portal with it.
+def ending(+fetch: U32) -> List<&2, U32>:
+  match fetch:
+    case 0:
+      W.sync()
+    case _:
+      W.flush()
+
+# A query's first bytes, and how it runs.
+def start(q: Query) -> Run & List<&2, U32>:
+  match q:
+    case Query.Simple{sql}:
+      (Run{0, 0, True{}, False{}}, W.query(sql))
+    case Query.Extended{sql, params, +fetch, timeout}:
+      (Run{fetch, timeout, U32.is_eq(fetch, 0), False{}},
+        List.concat(&2, U32, [W.parse(sql), W.bind(params), W.describe(), W.execute(fetch), ending(fetch)]))
+
+def started(p: Run & List<&2, U32>, login: A.Login, queue: List<&2, Query>, key: List<&2, U32>,
+  out: List<&2, U32>, replies: List<&2, Reply>) -> Session:
+  (run, bytes) = p
+  Session{1, login, queue, run, key, Nil{}, List.append(&2, U32, out, bytes), replies}
 
 # The server is ready: send the next query, or say goodbye.
-def ready(+phase: U32, login: A.Login, queue: List<&2, String>, fields: List<&2, W.Field>,
-  out: List<&2, U32>, replies: List<&2, Reply>) -> Session:
-  match phase:
-    case 3:
-      Session{3, login, queue, fields, out, replies}
-    case _:
-      match queue:
-        case Nil{}:
-          Session{2, login, Nil{}, fields, List.append(&2, U32, out, W.terminate()), replies}
-        case sql <> rest:
-          Session{1, login, rest, Nil{}, List.append(&2, U32, out, W.query(sql)), replies}
+def ready(s: Session) -> Session:
+  match s:
+    case Session{+phase, login, queue, run, key, fields, out, replies}:
+      match phase:
+        case 3:
+          Session{3, login, queue, run, key, fields, out, replies}
+        case _:
+          match queue:
+            case Nil{}:
+              Session{2, login, Nil{}, run, key, fields, List.append(&2, U32, out, W.terminate()), replies}
+            case q <> rest:
+              started(start(q), login, rest, key, out, replies)
 
 # An error during startup ends the session; during a query it ends only
-# that query, and the server is ready again after it.
-def error(+phase: U32, login: A.Login, queue: List<&2, String>, fields: List<&2, W.Field>,
-  out: List<&2, U32>, replies: List<&2, Reply>, r: Reply) -> Session:
-  match phase:
-    case 0:
-      Session{3, login, queue, fields, out, r <> replies}
-    case _:
-      Session{phase, login, queue, fields, out, r <> replies}
+# that query, and the server is ready again after its Sync.
+def error(s: Session, r: Reply) -> Session:
+  match s:
+    case Session{+phase, login, queue, run, key, fields, out, replies}:
+      match phase:
+        case 0:
+          Session{3, login, queue, run, key, fields, out, r <> replies}
+        case _:
+          sync(Session{phase, login, queue, run, key, fields, out, r <> replies})
 
 # An authentication request: send auth.bend's answer, or fail the session.
-def auth(a: A.Answer, queue: List<&2, String>, fields: List<&2, W.Field>,
-  out: List<&2, U32>, replies: List<&2, Reply>) -> Session:
-  match a:
-    case A.Answer.Send{login, bytes}:
-      Session{0, login, queue, fields, List.append(&2, U32, out, bytes), replies}
-    case A.Answer.Fail{message}:
-      Session{3, A.Login.Done{}, queue, fields, out, Reply.Error{"FATAL", "28000", message} <> replies}
-
-def react.go(s: Session, msg: W.Backend) -> Session:
+def auth(s: Session, a: A.Answer) -> Session:
   match s:
-    case Session{+phase, login, queue, +fields, out, replies}:
-      match msg:
-        case W.Backend.Auth{code, data}:
-          auth(A.answer(code, data, login), queue, fields, out, replies)
-        case W.Backend.Ready{status}:
-          ready(phase, login, queue, fields, out, replies)
-        case W.Backend.Columns{+fs}:
-          Session{phase, login, queue, fs, out, Reply.Columns{fs} <> replies}
-        case W.Backend.Row{cells}:
-          Session{phase, login, queue, fields, out, Reply.Row{R.record(fields, cells)} <> replies}
-        case W.Backend.Complete{tag}:
-          Session{phase, login, queue, fields, out, Reply.Complete{tag} <> replies}
-        case W.Backend.Error{severity, code, message}:
-          error(phase, login, queue, fields, out, replies, Reply.Error{severity, code, message})
-        case W.Backend.Notice{severity, code, message}:
-          Session{phase, login, queue, fields, out, Reply.Notice{severity, code, message} <> replies}
-        case _:
-          Session{phase, login, queue, fields, out, replies}
+    case Session{phase, l, queue, run, key, fields, out, replies}:
+      match a:
+        case A.Answer.Send{login, bytes}:
+          Session{0, login, queue, run, key, fields, List.append(&2, U32, out, bytes), replies}
+        case A.Answer.Fail{message}:
+          Session{3, A.Login.Done{}, queue, run, key, fields, out,
+            Reply.Error{"FATAL", "28000", message} <> replies}
+
+def keyed(s: Session, pid: U32, secret: U32) -> Session:
+  match s:
+    case Session{phase, login, queue, run, key, fields, out, replies}:
+      Session{phase, login, queue, run, W.cancel_request(pid, secret), fields, out, replies}
+
+def columns(s: Session, +fs: List<&2, W.Field>) -> Session:
+  match s:
+    case Session{phase, login, queue, run, key, fields, out, replies}:
+      Session{phase, login, queue, run, key, fs, out, Reply.Columns{fs} <> replies}
+
+def row(s: Session, cells: List<&2, Maybe<&2, List<&2, U32>>>) -> Session:
+  match s:
+    case Session{phase, login, queue, run, key, +fields, out, replies}:
+      Session{phase, login, queue, run, key, fields, out, Reply.Row{R.record(fields, cells)} <> replies}
+
+def login(s: Session) -> A.Login:
+  match s:
+    case Session{phase, login, queue, run, key, fields, out, replies}:
+      login
+
+def react.go(+s: Session, msg: W.Backend) -> Session:
+  match msg:
+    case W.Backend.Auth{code, data}:
+      auth(s, A.answer(code, data, login(s)))
+    case W.Backend.Key{pid, secret}:
+      keyed(s, pid, secret)
+    case W.Backend.Ready{status}:
+      ready(s)
+    case W.Backend.Columns{fs}:
+      columns(s, fs)
+    case W.Backend.Row{cells}:
+      row(s, cells)
+    case W.Backend.Complete{tag}:
+      sync(reply(s, Reply.Complete{tag}))
+    case W.Backend.Empty{}:
+      sync(s)
+    case W.Backend.Suspended{}:
+      suspended(s)
+    case W.Backend.Error{severity, code, message}:
+      error(s, Reply.Error{severity, code, message})
+    case W.Backend.Notice{severity, code, message}:
+      reply(s, Reply.Notice{severity, code, message})
+    case _:
+      s
 
 def failed(s: Session) -> Bool:
   match s:
-    case Session{phase, login, queue, fields, out, replies}:
+    case Session{phase, login, queue, run, key, fields, out, replies}:
       U32.is_eq(phase, 3)
 
 def react.unless(failed: Bool, s: Session, msg: W.Backend) -> Session:
@@ -107,9 +206,9 @@ type Conn is Data:
 # A new connection, whose first bytes to send are the startup message.
 # nonce is SCRAM's: printable random bytes, from the caller since this is pure.
 def connect(+user: String, password: String, database: String, nonce: List<&2, U32>,
-  queue: List<&2, String>) -> Conn:
-  Conn{F.new(), Session{0, A.Login.Start{user, password, nonce}, queue, Nil{},
-    W.startup(user, database), Nil{}}}
+  queue: List<&2, Query>) -> Conn:
+  Conn{F.new(), Session{0, A.Login.Start{user, password, nonce}, queue,
+    Run{0, 0, True{}, False{}}, Nil{}, Nil{}, W.startup(user, database), Nil{}}}
 
 def receive.go(p: List<&2, F.Frame> & F.Rx, se: Session) -> Conn:
   (frames, rx) = p
@@ -124,26 +223,48 @@ def receive(c: Conn, chunk: List<&2, U32>) -> Conn:
 # The bytes to send, and the connection without them.
 def take(c: Conn) -> List<&2, U32> & Conn:
   match c:
-    case Conn{rx, Session{phase, login, queue, fields, out, replies}}:
-      (out, Conn{rx, Session{phase, login, queue, fields, Nil{}, replies}})
+    case Conn{rx, Session{phase, login, queue, run, key, fields, out, replies}}:
+      (out, Conn{rx, Session{phase, login, queue, run, key, fields, Nil{}, replies}})
 
 # Every reply so far, oldest first.
 def replies(c: Conn) -> List<&2, Reply>:
   match c:
-    case Conn{rx, Session{phase, login, queue, fields, out, rs}}:
+    case Conn{rx, Session{phase, login, queue, run, key, fields, out, rs}}:
       List.reverse(&2, Reply, rs)
 
 # The socket failed or closed under the session.
 def closed(c: Conn, reason: String) -> Conn:
   match c:
-    case Conn{rx, Session{phase, login, queue, fields, out, rs}}:
-      Conn{rx, Session{3, login, queue, fields, out, Reply.Closed{reason} <> rs}}
+    case Conn{rx, Session{phase, login, queue, run, key, fields, out, rs}}:
+      Conn{rx, Session{3, login, queue, run, key, fields, out, Reply.Closed{reason} <> rs}}
 
 # Whether the session still wants the socket.
 def open(c: Conn) -> Bool:
   match c:
-    case Conn{rx, Session{phase, login, queue, fields, out, replies}}:
+    case Conn{rx, Session{phase, login, queue, run, key, fields, out, replies}}:
       U32.is_lt(phase, 2)
+
+def deadline.at(+phase: U32, stopped: Bool, timeout: U32) -> U32:
+  match phase:
+    case 1:
+      Bool.pick(U32, stopped, 0, timeout)
+    case _:
+      0
+
+# How long to wait for the server before cancelling, in ms; 0 is forever.
+def deadline(c: Conn) -> U32:
+  match c:
+    case Conn{rx, Session{phase, login, queue, Run{fetch, timeout, synced, stopped}, key, fields, out, replies}}:
+      deadline.at(phase, stopped, timeout)
+
+# The running query's deadline (above) passed: it stops getting batches, the caller
+# gets Cancelled, and the shell gets the CancelRequest to send on a new
+# connection (empty if the server gave no key).
+def cancel(c: Conn) -> List<&2, U32> & Conn:
+  match c:
+    case Conn{rx, Session{phase, login, queue, Run{fetch, timeout, synced, stopped}, +key, fields, out, replies}}:
+      (key, Conn{rx, Session{phase, login, queue, Run{fetch, timeout, synced, True{}}, key, fields, out,
+        Reply.Cancelled{} <> replies}})
 
 # ---- showing replies, one line each
 
@@ -166,5 +287,7 @@ def show(e: Reply) -> String:
       "error " ++ severity ++ " " ++ code ++ " " ++ message
     case Reply.Notice{severity, code, message}:
       "notice " ++ severity ++ " " ++ code ++ " " ++ message
+    case Reply.Cancelled{}:
+      "cancelled"
     case Reply.Closed{reason}:
       "closed " ++ reason
