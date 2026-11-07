@@ -80,6 +80,13 @@ else
   else
     fail "live: JS lane"
   fi
+  printf '%s\n' "Tokyo has 13960000 people" "São Paulo has 12330000 people" \
+    "Zürich has 421878 people" "total: 26711878" >build/cities.expected
+  if $BEND examples/cities.bend 2>&1 | diff -u build/cities.expected -; then
+    pass "live: examples/cities.bend"
+  else
+    fail "live: examples/cities.bend"
+  fi
 fi
 
 if [ "$fails" -ne 0 ]; then

@@ -69,7 +69,8 @@ def main() -> IO(Unit):
 
 `run` returns the replies in order (`Columns`, a `Row` per row, `Complete`
 per statement); an `Error` ends only its own query, and `Closed` means the
-connection failed.
+connection failed. [`examples/cities.bend`](examples/cities.bend) is a complete
+program: it matches rows by shape and folds over them.
 
 ## Test
 
