@@ -25,7 +25,7 @@ jobs:
       PGDATABASE: postgres
       BLINK_LIVE: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The pinned release, laid out as bend-lang.com/install.sh lays it out.
       - name: Install Bend
