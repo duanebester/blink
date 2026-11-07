@@ -1,5 +1,9 @@
 # Blink
 
+> [!WARNING]
+> This repo was entirely vibe coded. Don't use it for anything but hacking
+> around: it is not reviewed, not secure, and not fit for real data.
+
 A PostgreSQL driver in [Bend](https://github.com/bendlang/bend), modelled on
 [Clunk](https://github.com/duanebester/clunk) and
 [Skunk](https://github.com/typelevel/skunk). It needs nothing but Bend: no
