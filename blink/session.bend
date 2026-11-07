@@ -17,18 +17,11 @@ type Reply is Data:
   Reply.Closed{reason: String}
 
 # phase 0 is startup, 1 a query running, 2 done (Terminate sent), 3 failed.
-# fields are the running statement's columns. out and replies are what the
-# shell hasn't taken yet, newest-first.
+# fields are the running statement's columns. out is what the shell hasn't
+# sent yet; replies are every reply so far, newest-first.
 type Session is Data:
   Session{phase: U32, queue: List<&2, String>, fields: List<&2, W.Field>,
     out: List<&2, U32>, replies: List<&2, Reply>}
-
-def new(queue: List<&2, String>) -> Session:
-  Session{0, queue, Nil{}, Nil{}, Nil{}}
-
-# The bytes that open a connection, before any message comes back.
-def hello(user: String, database: String) -> List<&2, U32>:
-  W.startup(user, database)
 
 # The server is ready: send the next query, or say goodbye.
 def ready(+phase: U32, queue: List<&2, String>, fields: List<&2, W.Field>,
@@ -90,17 +83,46 @@ def react(s: Session, msg: W.Backend) -> Session:
 def react_frames(s: Session, frames: List<&2, F.Frame>) -> Session:
   List.foldl(~&2, ~F.Frame, ~Session, ~(a => f => react(a, W.decode(f))), frames, s)
 
-# The bytes to send and the replies so far, oldest first, and the session
-# without them.
-def take(s: Session) -> (List<&2, U32> & List<&2, Reply>) & Session:
-  match s:
-    case Session{phase, queue, fields, out, replies}:
-      ((out, List.reverse(&2, Reply, replies)), Session{phase, queue, fields, Nil{}, Nil{}})
+# A connection's whole pure state: the framer and the session.
+type Conn is Data:
+  Conn{rx: F.Rx, se: Session}
+
+# A new connection, whose first bytes to send are the startup message.
+def connect(user: String, database: String, queue: List<&2, String>) -> Conn:
+  Conn{F.new(), Session{0, queue, Nil{}, W.startup(user, database), Nil{}}}
+
+def receive.go(p: List<&2, F.Frame> & F.Rx, se: Session) -> Conn:
+  (frames, rx) = p
+  Conn{rx, react_frames(se, frames)}
+
+# One read's bytes in.
+def receive(c: Conn, chunk: List<&2, U32>) -> Conn:
+  match c:
+    case Conn{rx, se}:
+      receive.go(F.take(F.feed(rx, chunk)), se)
+
+# The bytes to send, and the connection without them.
+def take(c: Conn) -> List<&2, U32> & Conn:
+  match c:
+    case Conn{rx, Session{phase, queue, fields, out, replies}}:
+      (out, Conn{rx, Session{phase, queue, fields, Nil{}, replies}})
+
+# Every reply so far, oldest first.
+def replies(c: Conn) -> List<&2, Reply>:
+  match c:
+    case Conn{rx, Session{phase, queue, fields, out, rs}}:
+      List.reverse(&2, Reply, rs)
+
+# The socket failed or closed under the session.
+def closed(c: Conn, reason: String) -> Conn:
+  match c:
+    case Conn{rx, Session{phase, queue, fields, out, rs}}:
+      Conn{rx, Session{3, queue, fields, out, Reply.Closed{reason} <> rs}}
 
 # Whether the session still wants the socket.
-def open(s: Session) -> Bool:
-  match s:
-    case Session{phase, queue, fields, out, replies}:
+def open(c: Conn) -> Bool:
+  match c:
+    case Conn{rx, Session{phase, queue, fields, out, replies}}:
       U32.is_lt(phase, 2)
 
 # ---- showing replies, one line each

@@ -6,30 +6,19 @@
 # tests/replay.expected is what it must print.
 import Base
 import ../blink/bytes.bend as B
-import ../blink/frame.bend as F
 import ../blink/session.bend as S
 
-# replies newest-first
 type Replay is Data:
-  Replay{rx: F.Rx, se: S.Session, out: List<&2, U32>, replies: List<&2, S.Reply>}
+  Replay{c: S.Conn, out: List<&2, U32>}
 
-def keep(acc: List<&2, S.Reply>, rs: List<&2, S.Reply>) -> List<&2, S.Reply>:
-  List.foldl(~&2, ~S.Reply, ~List<&2, S.Reply>, ~(a => r => r <> a), rs, acc)
-
-def taken(rx: F.Rx, q: (List<&2, U32> & List<&2, S.Reply>) & S.Session, out: List<&2, U32>,
-  replies: List<&2, S.Reply>) -> Replay:
-  ((o, rs), se) = q
-  Replay{rx, se, List.append(&2, U32, out, o), keep(replies, rs)}
-
-def framed(p: List<&2, F.Frame> & F.Rx, se: S.Session, out: List<&2, U32>,
-  replies: List<&2, S.Reply>) -> Replay:
-  (frames, rx) = p
-  taken(rx, S.take(S.react_frames(se, frames)), out, replies)
+def chunk.go(p: List<&2, U32> & S.Conn, out: List<&2, U32>) -> Replay:
+  (o, c) = p
+  Replay{c, List.append(&2, U32, out, o)}
 
 def chunk(r: Replay, bytes: List<&2, U32>) -> Replay:
   match r:
-    case Replay{rx, se, out, replies}:
-      framed(F.take(F.feed(rx, bytes)), se, out, replies)
+    case Replay{c, out}:
+      chunk.go(S.take(S.receive(c, bytes)), out)
 
 def go(fuel: Nat, r: Replay, c: B.Cut) -> Replay:
   match fuel:
@@ -45,7 +34,7 @@ def go(fuel: Nat, r: Replay, c: B.Cut) -> Replay:
               go(f, chunk(r, bytes), B.split(h <> t, 7n))
 
 def replay(+server: List<&2, U32>) -> Replay:
-  go(List.length(&2, U32, server), Replay{F.new(), S.new(["SELECT 1::int4 AS one, 'héllo'::text AS t, NULL::text AS n, true AS b, -42 AS neg; SELECT 1/0", "SELECT 'after' AS a"]), Nil{}, Nil{}},
+  go(List.length(&2, U32, server), Replay{S.connect("trusty", "world", ["SELECT 1::int4 AS one, 'héllo'::text AS t, NULL::text AS n, true AS b, -42 AS neg; SELECT 1/0", "SELECT 'after' AS a"]), Nil{}},
     B.split(server, 7n))
 
 def eq(a: List<&2, U32>, b: List<&2, U32>) -> Bool:
@@ -57,20 +46,11 @@ def eq(a: List<&2, U32>, b: List<&2, U32>) -> Bool:
     case _ _:
       False{}
 
-def prints(rs: List<&2, S.Reply>) -> IO(Unit):
-  match rs:
-    case Nil{}:
-      IO.pure(Unit, Unit{})
-    case r <> rest:
-      do IO<Unit>:
-        IO.print(S.show(r))
-        prints(rest)
-
 def report(r: Replay, client: List<&2, U32>) -> IO(Unit):
   match r:
-    case Replay{rx, se, out, replies}:
+    case Replay{c, out}:
       do IO<Unit>:
-        prints(List.reverse(&2, S.Reply, replies))
+        List.for_each(~&2, ~S.Reply, ~(r => IO.print(S.show(r))), S.replies(c))
         IO.print(Bool.pick(String, eq(out, client), "client bytes match", "client bytes differ"))
 
 def read.got(m: File & Result<&1, &1, U32 & String, List<&2, U32>>) -> IO(List<&2, U32>):

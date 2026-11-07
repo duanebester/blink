@@ -8,7 +8,7 @@ import ./frame.bend as F
 
 # A message body behind its length, which counts itself.
 def sized(+body: List<&2, U32>) -> List<&2, U32>:
-  List.append(&2, U32, B.be32((B.size(body) + 4 : U32)), body)
+  List.append(&2, U32, B.be32((U32.from_nat(List.length(&2, U32, body)) + 4 : U32)), body)
 
 # Protocol 3.0, asking for UTF8 text, since Blink encodes and decodes UTF-8.
 def startup(user: String, database: String) -> List<&2, U32>:
@@ -32,7 +32,6 @@ type Field is Data:
 
 type Backend is Data:
   Backend.Auth{code: U32}
-  Backend.Param{name: String, value: String}
   Backend.Key{pid: U32, secret: U32}
   Backend.Ready{status: U32}
   Backend.Columns{fields: List<&2, Field>}
@@ -40,8 +39,6 @@ type Backend is Data:
   Backend.Complete{tag: String}
   Backend.Error{severity: String, code: String, message: String}
   Backend.Notice{severity: String, code: String, message: String}
-  Backend.Notify{pid: U32, channel: String, payload: String}
-  Backend.EmptyQuery{}
   Backend.Other{tag: U32}
 
 # -- RowDescription: a count, then per column a name and 18 bytes, of which
@@ -110,78 +107,56 @@ def cells(body: List<&2, U32>) -> List<&2, Maybe<&2, List<&2, U32>>>:
 # no recursion of its own; kind 0 waits for a field's type byte.
 
 type Fields is Data:
-  Fields{end: Bool, kind: U32, cur: List<&2, U32>, severity: String, code: String, message: String}
+  Fields{kind: U32, cur: List<&2, U32>, severity: String, code: String, message: String}
 
 def fields.keep(+kind: U32, v: String, severity: String, code: String, message: String) -> Fields:
   match kind:
     case 83:
-      Fields{False{}, 0, Nil{}, v, code, message}
+      Fields{0, Nil{}, v, code, message}
     case 67:
-      Fields{False{}, 0, Nil{}, severity, v, message}
+      Fields{0, Nil{}, severity, v, message}
     case 77:
-      Fields{False{}, 0, Nil{}, severity, code, v}
+      Fields{0, Nil{}, severity, code, v}
     case _:
-      Fields{False{}, 0, Nil{}, severity, code, message}
+      Fields{0, Nil{}, severity, code, message}
 
 def fields.at(nul: Bool, start: Bool, +b: U32, +kind: U32, cur: List<&2, U32>,
   severity: String, code: String, message: String) -> Fields:
   match nul start:
     case True{} True{}:
-      Fields{True{}, 0, Nil{}, severity, code, message}
+      Fields{0, Nil{}, severity, code, message}
     case True{} False{}:
       fields.keep(kind, B.text(List.reverse(&2, U32, cur)), severity, code, message)
     case False{} True{}:
-      Fields{False{}, b, Nil{}, severity, code, message}
+      Fields{b, Nil{}, severity, code, message}
     case False{} False{}:
-      Fields{False{}, kind, b <> cur, severity, code, message}
+      Fields{kind, b <> cur, severity, code, message}
 
 def fields.step(f: Fields, +b: U32) -> Fields:
   match f:
-    case Fields{end, +kind, cur, severity, code, message}:
-      match end:
-        case True{}:
-          Fields{True{}, kind, cur, severity, code, message}
-        case False{}:
-          fields.at(U32.is_eq(b, 0), U32.is_eq(kind, 0), b, kind, cur, severity, code, message)
+    case Fields{+kind, cur, severity, code, message}:
+      fields.at(U32.is_eq(b, 0), U32.is_eq(kind, 0), b, kind, cur, severity, code, message)
 
 def fields(body: List<&2, U32>) -> Fields:
   List.foldl(~&2, ~U32, ~Fields, ~(f => b => fields.step(f, b)), body,
-    Fields{False{}, 0, Nil{}, "", "", ""})
+    Fields{0, Nil{}, "", "", ""})
 
 def error(f: Fields) -> Backend:
   match f:
-    case Fields{end, kind, cur, severity, code, message}:
+    case Fields{kind, cur, severity, code, message}:
       Backend.Error{severity, code, message}
 
 def notice(f: Fields) -> Backend:
   match f:
-    case Fields{end, kind, cur, severity, code, message}:
+    case Fields{kind, cur, severity, code, message}:
       Backend.Notice{severity, code, message}
 
-# -- cstrings, as ParameterStatus, NotificationResponse and CommandComplete
-# carry
+# -- CommandComplete: a cstring
 
 def first(c: B.Cut) -> String:
   match c:
     case B.Cut{s, rest}:
       B.text(s)
-
-def param(c: B.Cut) -> Backend:
-  match c:
-    case B.Cut{name, rest}:
-      Backend.Param{B.text(name), first(B.cut_cstring(rest))}
-
-def notify.go(+pid: U32, c: B.Cut) -> Backend:
-  match c:
-    case B.Cut{channel, rest}:
-      Backend.Notify{pid, B.text(channel), first(B.cut_cstring(rest))}
-
-def notify(body: List<&2, U32>) -> Backend:
-  match body:
-    case a <> b <> c <> d <> rest:
-      notify.go(B.u32(a, b, c, d), B.cut_cstring(rest))
-    case _:
-      Backend.Other{65}
 
 def key(body: List<&2, U32>) -> Backend:
   match body:
@@ -204,8 +179,6 @@ def decode(f: F.Frame) -> Backend:
       match tag:
         case 82:
           Backend.Auth{B.word(body)}
-        case 83:
-          param(B.cut_cstring(body))
         case 75:
           key(body)
         case 90:
@@ -220,9 +193,5 @@ def decode(f: F.Frame) -> Backend:
           error(fields(body))
         case 78:
           notice(fields(body))
-        case 65:
-          notify(body)
-        case 73:
-          Backend.EmptyQuery{}
         case _:
           Backend.Other{tag}

@@ -22,13 +22,6 @@ type Entry is Data:
 
 # ---- values
 
-def int.of(neg: Bool, m: Maybe<&2, U32>) -> Maybe<&2, Int>:
-  match m:
-    case None{}:
-      None{}
-    case Some{abs}:
-      Some{Int{neg, abs}}
-
 # "-42" -> Int{True, 42}; None if it doesn't parse.
 def int(bytes: List<&2, U32>) -> Maybe<&2, Int>:
   match bytes:
@@ -37,9 +30,9 @@ def int(bytes: List<&2, U32>) -> Maybe<&2, Int>:
     case +h <> t:
       match h:
         case 45:
-          int.of(True{}, U32.read(B.text(t)))
+          Maybe.map(&2, U32, Int, n => Int{True{}, n}, U32.read(B.text(t)))
         case _:
-          int.of(False{}, U32.read(B.text(h <> t)))
+          Maybe.map(&2, U32, Int, n => Int{False{}, n}, U32.read(B.text(h <> t)))
 
 def bool(bytes: List<&2, U32>) -> Bool:
   match bytes:
@@ -110,11 +103,7 @@ def show.go(es: List<&2, Entry>) -> String:
 
 # A record as a line of `psql -A`: values joined by "|".
 def show(es: List<&2, Entry>) -> String:
-  match es:
-    case Nil{}:
-      ""
-    case Entry{name, v} <> rest:
-      show.value(v) ++ show.go(rest)
+  String.drop(show.go(es), 1n)
 
 # ---- typed rows
 
@@ -142,35 +131,14 @@ def Row(cs: List<&2, Col>) -> Type:
     case c <> rest:
       ColT(c) & Row(rest)
 
-def col.int(cell: Maybe<&2, List<&2, U32>>) -> Maybe<&2, Int>:
-  match cell:
-    case None{}:
-      None{}
-    case Some{bytes}:
-      int(bytes)
-
-def col.text(cell: Maybe<&2, List<&2, U32>>) -> Maybe<&2, String>:
-  match cell:
-    case None{}:
-      None{}
-    case Some{bytes}:
-      Some{B.text(bytes)}
-
-def col.bool(cell: Maybe<&2, List<&2, U32>>) -> Maybe<&2, Bool>:
-  match cell:
-    case None{}:
-      None{}
-    case Some{bytes}:
-      Some{bool(bytes)}
-
 def col(c: Col, cell: Maybe<&2, List<&2, U32>>) -> ColT(c):
   match c:
     case Col.Int{}:
-      col.int(cell)
+      Maybe.bind(&2, List<&2, U32>, Int, cell, int)
     case Col.Text{}:
-      col.text(cell)
+      Maybe.map(&2, List<&2, U32>, String, B.text, cell)
     case Col.Bool{}:
-      col.bool(cell)
+      Maybe.map(&2, List<&2, U32>, Bool, bool, cell)
 
 # A DataRow's cells as the schema's tuple; a missing cell is None.
 def decode(cs: List<&2, Col>, cells: List<&2, Maybe<&2, List<&2, U32>>>) -> Row(cs):

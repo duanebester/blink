@@ -10,64 +10,38 @@ import ../blink/rows.bend as R
 import ../blink/session.bend as S
 import ../blink/io.bend as Blink
 
-def or_default(r: Result<&1, &1, U32 & String, String>, d: String) -> String:
-  match r:
-    case Done{v}:
-      v
-    case Fail{e}:
-      d
-
 def env(name: String, d: String) -> IO(String):
   do IO<String>:
     r : Result<&1, &1, U32 & String, String> <- IO.get_env(name)
-    return or_default(r, d)
-
-def port(m: Maybe<&2, U32>) -> U32:
-  match m:
-    case None{}:
-      5432
-    case Some{p}:
-      p
+    return Result.default(&1, &1, U32 & String, String, r, d)
 
 # a reply for a reader of psql's output: rows on stdout, failures on stderr
-def print(r: S.Reply) -> IO(U32):
+def print(r: S.Reply) -> IO(Unit):
   match r:
     case S.Reply.Row{es}:
-      do IO<U32>:
-        IO.print(R.show(es))
-        return 0
+      IO.print(R.show(es))
     case S.Reply.Error{severity, code, message}:
-      do IO<U32>:
-        IO.print_err(severity ++ " " ++ code ++ ": " ++ message)
-        return 1
+      IO.print_err(severity ++ " " ++ code ++ ": " ++ message)
     case S.Reply.Closed{reason}:
-      do IO<U32>:
-        IO.print_err("closed: " ++ reason)
-        return 1
+      IO.print_err("closed: " ++ reason)
     case _:
-      IO.pure(U32, 0)
+      IO.pure(Unit, Unit{})
 
-def bad(r: S.Reply) -> U32:
+def print_all(every: Bool, rs: List<&2, S.Reply>) -> IO(Unit):
+  match every:
+    case True{}:
+      List.for_each(~&2, ~S.Reply, ~(r => IO.print(S.show(r))), rs)
+    case False{}:
+      List.for_each(~&2, ~S.Reply, ~(r => print(r)), rs)
+
+def failed(r: S.Reply) -> Bool:
   match r:
     case S.Reply.Error{severity, code, message}:
-      1
+      True{}
     case S.Reply.Closed{reason}:
-      1
+      True{}
     case _:
-      0
-
-def print_all(every: Bool, rs: List<&2, S.Reply>, failed: U32) -> IO(U32):
-  match every rs:
-    case _ Nil{}:
-      IO.pure(U32, failed)
-    case True{} +r <> rest:
-      do IO<U32>:
-        IO.print(S.show(r))
-        print_all(True{}, rest, U32.max(failed, bad(r)))
-    case False{} r <> rest:
-      do IO<U32>:
-        b : U32 <- print(r)
-        print_all(False{}, rest, U32.max(failed, b))
+      False{}
 
 def go(every: Bool, queries: List<&2, String>) -> IO(Unit):
   do IO<Unit>:
@@ -76,9 +50,9 @@ def go(every: Bool, queries: List<&2, String>) -> IO(Unit):
     db   : String <- env("PGDATABASE", pguser)
     host : String <- env("PGHOST", "127.0.0.1")
     p    : String <- env("PGPORT", "5432")
-    rs   : List<&2, S.Reply> <- Blink.run(host, port(U32.read(p)), pguser, db, queries)
-    failed : U32 <- print_all(every, rs, 0)
-    IO.exit(failed)
+    +rs  : List<&2, S.Reply> <- Blink.run(host, Maybe.default(&2, U32, U32.read(p), 5432), pguser, db, queries)
+    print_all(every, rs)
+    IO.exit(Bool.pick(U32, List.any(~&2, ~S.Reply, ~(r => failed(r)), rs), 1, 0))
 
 def mode.flag(every: Bool, +a: String, rest: List<&2, String>) -> IO(Unit):
   match every:

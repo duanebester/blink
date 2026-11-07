@@ -5,9 +5,6 @@ import Base
 
 # ---- writing
 
-def be16(+n: U32) -> List<&2, U32>:
-  [((n >> 8n) .&. 255 : U32), (n .&. 255 : U32)]
-
 def be32(+n: U32) -> List<&2, U32>:
   [((n >> 24n) .&. 255 : U32), ((n >> 16n) .&. 255 : U32), ((n >> 8n) .&. 255 : U32),
     (n .&. 255 : U32)]
@@ -34,9 +31,6 @@ def utf8(s: String) -> List<&2, U32>:
 # A NUL-terminated string, as the protocol writes names and SQL.
 def cstring(s: String) -> List<&2, U32>:
   List.append(&2, U32, utf8(s), [0])
-
-def size(xs: List<&2, U32>) -> U32:
-  U32.from_nat(List.length(&2, U32, xs))
 
 # ---- reading
 

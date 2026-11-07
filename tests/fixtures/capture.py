@@ -4,7 +4,9 @@ Blink itself needs no Python). Connects with trust auth, runs QUERIES with
 the simple query protocol, and writes what each side sent:
 
   session.server.bin  every byte the server sent
-  session.client.bin  every byte after the startup message the client sent
+  session.client.bin  every byte the client sent
+
+tests/replay.bend connects as trusty to world, so record as them:
 
   PGUSER=trusty PGDATABASE=world python3 tests/fixtures/capture.py
 """
@@ -49,7 +51,7 @@ def main():
     params = b"".join(s.encode() + b"\0" for s in
                       ["user", user, "database", db, "client_encoding", "UTF8"]) + b"\0"
     startup = struct.pack("!II", len(params) + 8, 196608) + params
-    server, client = bytearray(), bytearray()
+    server, client = bytearray(), bytearray(startup)
     sock.sendall(startup)
     until_ready(sock, server)
     for q in QUERIES:
