@@ -7,8 +7,8 @@
 A PostgreSQL driver in [Bend](https://github.com/bendlang/bend), modelled on
 [Clunk](https://github.com/duanebester/clunk) and
 [Skunk](https://github.com/typelevel/skunk). It needs nothing but Bend: no
-libpq, no packages beyond Base. It's an early baseline: local TCP, trust
-auth and simple queries.
+libpq, no packages beyond Base. It's an early baseline: local TCP, password
+auth (trust, cleartext, MD5, SCRAM-SHA-256) and simple queries.
 
 ## Design: bytes → messages → records are pure transforms
 
@@ -25,28 +25,30 @@ auth and simple queries.
 | [`bytes`](blink/bytes.bend) | Big-endian ints, C strings, UTF-8 |
 | [`frame`](blink/frame.bend) | bytes → frames: a fold whose state carries across reads |
 | [`wire`](blink/wire.bend) | Frontend builders; frames → `Backend` messages |
+| [`crypto`](blink/crypto.bend) | MD5, SHA-256, HMAC, PBKDF2, base64 |
+| [`auth`](blink/auth.bend) | Each auth request's answer, SCRAM included: `answer(code, data, login)` |
 | [`rows`](blink/rows.bend) | Cells → values by type OID; untyped records, and typed rows where `Row(schema)` computes the Bend type |
 | [`session`](blink/session.bend) | The protocol state machine: `react(Session, Backend)`. `Conn` adds the framer, so a read is `receive(conn, bytes)`, then `take` the bytes to send |
-| [`io`](blink/io.bend) | The only effects: `run(host, port, user, database, queries)` |
+| [`io`](blink/io.bend) | The only effects: `run(host, port, user, password, database, queries)` |
 
 [`LAWS.bend`](LAWS.bend) states facts about the pure core and
 [`PROOF.bend`](PROOF.bend) proves them; Bend's compiler checks both. For
-example, `feed_split`: how TCP cuts the stream never changes the frames.
+example, `feed_split`: how TCP cuts the stream never changes the frames, and
+`scram_signature_checked`: a server that can't sign doesn't get a login.
 
 ## Quick start
 
 Install [Bend 2.0.40](https://github.com/bendlang/bend/releases/tag/v2.0.40)
 (`curl -fsSL https://bend-lang.com/install.sh | sh`) and, for native
-builds, clang 14+. Start a PostgreSQL with trust auth:
+builds, clang 14+. Start a PostgreSQL:
 
 ```sh
-docker run -d -p 5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:17
-export PGUSER=postgres PGDATABASE=postgres
+docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=blink postgres:17
+export PGUSER=postgres PGPASSWORD=blink PGDATABASE=postgres
 ```
 
-A system PostgreSQL works too, with a `host all <user> 127.0.0.1/32 trust`
-line in `pg_hba.conf`. Blink reads `PGHOST` (an IPv4 address, default
-`127.0.0.1`), `PGPORT`, `PGUSER` and `PGDATABASE`.
+Blink reads `PGHOST` (an IPv4 address, default `127.0.0.1`), `PGPORT`,
+`PGUSER`, `PGPASSWORD` and `PGDATABASE`.
 
 [`examples/query.bend`](examples/query.bend) prints rows as `psql -qAt` does;
 errors go to stderr with exit code 1:
@@ -67,7 +69,7 @@ import ./blink/session.bend as S
 
 def main() -> IO(Unit):
   do IO<Unit>:
-    rs : List<&2, S.Reply> <- Blink.run("127.0.0.1", 5432, "postgres", "postgres", ["SELECT 1 AS one"])
+    rs : List<&2, S.Reply> <- Blink.run("127.0.0.1", 5432, "postgres", "blink", "postgres", ["SELECT 1 AS one"])
     List.for_each(~&2, ~S.Reply, ~(r => IO.print(S.show(r))), rs)
 ```
 
@@ -83,16 +85,18 @@ scripts/test.sh
 ```
 
 It checks the laws, replays a recorded session
-([`tests/fixtures`](tests/fixtures)) through the pure core on both lanes, and,
-if a server is reachable, compares Blink with `psql` on live queries
-(`BLINK_LIVE=1` fails instead of skipping). GitHub Actions runs it against
-PostgreSQL 17 on every push and pull request. `tests/fixtures/capture.py`
+([`tests/fixtures`](tests/fixtures)) through the pure core, checks the hashes
+and SCRAM against RFC vectors ([`tests/auth.bend`](tests/auth.bend)), and, if
+a server is reachable, compares Blink with `psql` on live queries
+(`BLINK_LIVE=1` fails instead of skipping; `BLINK_AUTH="user:password ..."`
+also tests those logins). GitHub Actions runs it against PostgreSQL 17, over
+SCRAM and MD5, on every push and pull request. `tests/fixtures/capture.py`
 re-records the session as `PGUSER=trusty PGDATABASE=world`.
 
 ## Limitations
 
 - IPv4 TCP only: Bend has no DNS, TLS, IPv6 or Unix sockets.
-- Trust auth only; MD5 and SCRAM are next.
+- SCRAM without SASLprep or channel binding (as libpq over plain TCP); use ASCII passwords.
 - Simple query protocol only: no parameters, batches, cancellation or LISTEN/NOTIFY.
 - One connection per `run`, all replies held in memory; no streaming or pool.
 - Values are text except bool and int2/int4 (Bend has no signed ints, U64 or F64 yet).
@@ -102,8 +106,8 @@ re-records the session as `PGUSER=trusty PGDATABASE=world`.
 
 ## Next
 
-MD5 and SCRAM in pure Bend, the extended protocol, streaming replies over a
-`Chan`, a pool, LISTEN/NOTIFY, then speed.
+The extended protocol, streaming replies over a `Chan`, a pool,
+LISTEN/NOTIFY, then speed.
 
 ## Credits
 

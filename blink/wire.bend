@@ -1,5 +1,5 @@
 # The wire protocol (v3): frontend messages -> bytes, and frames -> backend
-# messages. Pure. Only what the simple query protocol needs so far.
+# messages. Pure. What startup, authentication and simple queries need.
 import Base
 import ./bytes.bend as B
 import ./frame.bend as F
@@ -20,6 +20,17 @@ def startup(user: String, database: String) -> List<&2, U32>:
 def query(sql: String) -> List<&2, U32>:
   81 <> sized(B.cstring(sql))
 
+# 'p': a password, an MD5 hash of one, or a SASL step; only the body differs.
+def password(bytes: List<&2, U32>) -> List<&2, U32>:
+  112 <> sized(List.append(&2, U32, bytes, [0]))
+
+def sasl_initial(mechanism: String, +data: List<&2, U32>) -> List<&2, U32>:
+  112 <> sized(List.concat(&2, U32, [B.cstring(mechanism),
+    B.be32(U32.from_nat(List.length(&2, U32, data))), data]))
+
+def sasl_response(data: List<&2, U32>) -> List<&2, U32>:
+  112 <> sized(data)
+
 # 'X': the polite goodbye before closing the socket.
 def terminate() -> List<&2, U32>:
   [88, 0, 0, 0, 4]
@@ -31,7 +42,7 @@ type Field is Data:
   Field{name: String, oid: U32}
 
 type Backend is Data:
-  Backend.Auth{code: U32}
+  Backend.Auth{code: U32, data: List<&2, U32>}
   Backend.Key{pid: U32, secret: U32}
   Backend.Ready{status: U32}
   Backend.Columns{fields: List<&2, Field>}
@@ -158,6 +169,16 @@ def first(c: B.Cut) -> String:
     case B.Cut{s, rest}:
       B.text(s)
 
+# -- Authentication: a request code, then what that request carries (an MD5
+# salt, SASL mechanisms or SASL data).
+
+def auth(body: List<&2, U32>) -> Backend:
+  match body:
+    case a <> b <> c <> d <> rest:
+      Backend.Auth{B.u32(a, b, c, d), rest}
+    case _:
+      Backend.Other{82}
+
 def key(body: List<&2, U32>) -> Backend:
   match body:
     case a <> b <> c <> d <> rest:
@@ -178,7 +199,7 @@ def decode(f: F.Frame) -> Backend:
     case F.Frame{+tag, +body}:
       match tag:
         case 82:
-          Backend.Auth{B.word(body)}
+          auth(body)
         case 75:
           key(body)
         case 90:

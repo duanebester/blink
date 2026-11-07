@@ -2,7 +2,8 @@
 # values joined by "|", NULL empty. Errors go to stderr, and the exit code
 # is 1 if there was any. With --replies first, prints every reply instead.
 # Connects as libpq would, from PGHOST (an IPv4 address, 127.0.0.1 by
-# default), PGPORT (5432), PGUSER ($USER) and PGDATABASE (the user).
+# default), PGPORT (5432), PGUSER ($USER), PGPASSWORD and PGDATABASE (the
+# user).
 #
 #   bend examples/query.bend "SELECT 1 AS one"
 import Base
@@ -47,10 +48,11 @@ def go(every: Bool, queries: List<&2, String>) -> IO(Unit):
   do IO<Unit>:
     user : String <- env("USER", "postgres")
     +pguser : String <- env("PGUSER", user)
+    pw   : String <- env("PGPASSWORD", "")
     db   : String <- env("PGDATABASE", pguser)
     host : String <- env("PGHOST", "127.0.0.1")
     p    : String <- env("PGPORT", "5432")
-    +rs  : List<&2, S.Reply> <- Blink.run(host, Maybe.default(&2, U32, U32.read(p), 5432), pguser, db, queries)
+    +rs  : List<&2, S.Reply> <- Blink.run(host, Maybe.default(&2, U32, U32.read(p), 5432), pguser, pw, db, queries)
     print_all(every, rs)
     IO.exit(Bool.pick(U32, List.any(~&2, ~S.Reply, ~(r => failed(r)), rs), 1, 0))
 

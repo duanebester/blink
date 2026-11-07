@@ -25,3 +25,12 @@ def Laws.error_fields():
 
 def Laws.typed_row():
   {==}
+
+def Laws.scram_signature_checked():
+  {==}
+
+def Laws.scram_signature_accepted():
+  {==}
+
+def Laws.scram_not_skipped():
+  {==}

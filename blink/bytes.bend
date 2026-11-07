@@ -82,6 +82,49 @@ def cstring.go(xs: List<&2, U32>, acc: List<&2, U32>) -> Cut:
 def cut_cstring(xs: List<&2, U32>) -> Cut:
   cstring.go(xs, Nil{})
 
+def eq(a: List<&2, U32>, b: List<&2, U32>) -> Bool:
+  match a b:
+    case Nil{} Nil{}:
+      True{}
+    case x <> xs y <> ys:
+      Bool.and(U32.is_eq(x, y), eq(xs, ys))
+    case _ _:
+      False{}
+
+def starts_with(xs: List<&2, U32>, prefix: List<&2, U32>) -> Bool:
+  match xs prefix:
+    case _ Nil{}:
+      True{}
+    case x <> rest y <> ys:
+      Bool.and(U32.is_eq(x, y), starts_with(rest, ys))
+    case Nil{} _:
+      False{}
+
+# NUL-terminated strings in a row, as SASL mechanisms come; a fold, so it
+# needs no recursion of its own. Both lists are newest-first until the end.
+type Strings is Data:
+  Strings{cur: List<&2, U32>, done: List<&2, List<&2, U32>>}
+
+def cstrings.at(nul: Bool, b: U32, cur: List<&2, U32>, done: List<&2, List<&2, U32>>) -> Strings:
+  match nul:
+    case True{}:
+      Strings{Nil{}, List.reverse(&2, U32, cur) <> done}
+    case False{}:
+      Strings{b <> cur, done}
+
+def cstrings.step(s: Strings, +b: U32) -> Strings:
+  match s:
+    case Strings{cur, done}:
+      cstrings.at(U32.is_eq(b, 0), b, cur, done)
+
+def cstrings.end(s: Strings) -> List<&2, List<&2, U32>>:
+  match s:
+    case Strings{cur, done}:
+      List.reverse(&2, List<&2, U32>, done)
+
+def cstrings(xs: List<&2, U32>) -> List<&2, List<&2, U32>>:
+  cstrings.end(List.foldl(~&2, ~U32, ~Strings, ~(s => b => cstrings.step(s, b)), xs, Strings{Nil{}, Nil{}}))
+
 # ---- UTF-8 decoding
 #
 # From Bend's demos/io_http_fetch (Apache-2.0): WHATWG's replacement policy,

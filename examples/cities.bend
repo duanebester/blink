@@ -1,6 +1,7 @@
 # Using Blink as a library: run queries, then match the replies by shape
 # and fold over them. Makes its own temporary table, so any database works.
-# Connects as examples/query.bend does (PGHOST, PGUSER, PGDATABASE).
+# Connects as examples/query.bend does (PGHOST, PGUSER, PGPASSWORD,
+# PGDATABASE).
 #
 #   bend examples/cities.bend
 #   # Tokyo has 13960000 people
@@ -40,8 +41,9 @@ def main() -> IO(Unit):
   do IO<Unit>:
     host : String <- env("PGHOST", "127.0.0.1")
     +user : String <- env("PGUSER", "postgres")
+    pw : String <- env("PGPASSWORD", "")
     db : String <- env("PGDATABASE", user)
-    +rs : List<&2, S.Reply> <- Blink.run(host, 5432, user, db, [
+    +rs : List<&2, S.Reply> <- Blink.run(host, 5432, user, pw, db, [
       "CREATE TEMP TABLE city (name text, pop int4)",
       "INSERT INTO city VALUES ('Tokyo', 13960000), ('São Paulo', 12330000), ('Zürich', 421878), ('Atlantis', NULL)",
       "SELECT name, pop FROM city WHERE pop IS NOT NULL ORDER BY pop DESC"])

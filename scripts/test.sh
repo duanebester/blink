@@ -5,8 +5,10 @@
 #   BLINK_LIVE=1 scripts/test.sh   fail instead of skipping when no server
 #
 # The live part connects as libpq would, from PGHOST (default 127.0.0.1),
-# PGPORT, PGUSER and PGDATABASE, with trust auth, and compares Blink's rows
-# with `psql -qAt` on the same queries. BEND picks the bend command.
+# PGPORT, PGUSER, PGPASSWORD and PGDATABASE, and compares Blink's rows with
+# `psql -qAt` on the same queries. BLINK_AUTH="user:password ..." also logs
+# in as each user, with its password and with a wrong one. BEND picks the
+# bend command.
 set -eu
 cd "$(dirname "$0")/.."
 BEND=${BEND:-bend}
@@ -35,14 +37,26 @@ else
   fail "replay (native)"
 fi
 
-# 3. a live server
+# 3. hash, MAC and SCRAM vectors (no server), on both lanes
+if $BEND tests/auth.bend | diff -u tests/auth.expected -; then
+  pass "auth vectors (JS lane)"
+else
+  fail "auth vectors (JS lane)"
+fi
+if $BEND tests/auth.bend -o build/auth >/dev/null && ./build/auth | diff -u tests/auth.expected -; then
+  pass "auth vectors (native)"
+else
+  fail "auth vectors (native)"
+fi
+
+# 4. a live server
 $BEND examples/query.bend -o build/query >/dev/null
 if ! ./build/query "SELECT 1" >/dev/null 2>&1; then
   if [ "${BLINK_LIVE:-0}" = 1 ]; then
     ./build/query "SELECT 1" || true
-    fail "live: no server at $PGHOST:${PGPORT:-5432} with trust auth"
+    fail "live: can't log in at $PGHOST:${PGPORT:-5432}"
   else
-    printf 'skip  live: no server at %s:%s with trust auth (see README)\n' "$PGHOST" "${PGPORT:-5432}"
+    printf 'skip  live: no server at %s:%s, or no login (see README)\n' "$PGHOST" "${PGPORT:-5432}"
   fi
 else
   psql_each() { # sql...: psql -c for each
@@ -80,6 +94,15 @@ else
   else
     fail "live: JS lane"
   fi
+  for login in ${BLINK_AUTH:-}; do
+    user=${login%%:*}
+    if [ "$(PGUSER=$user PGPASSWORD=${login#*:} ./build/query "SELECT current_user" 2>&1)" = "$user" ] \
+      && PGUSER=$user PGPASSWORD=not-the-password ./build/query "SELECT 1" 2>&1 | grep -q '^FATAL 28P01'; then
+      pass "live: log in as $user; a wrong password fails"
+    else
+      fail "live: log in as $user"
+    fi
+  done
   printf '%s\n' "Tokyo has 13960000 people" "São Paulo has 12330000 people" \
     "Zürich has 421878 people" "total: 26711878" >build/cities.expected
   if $BEND examples/cities.bend 2>&1 | diff -u build/cities.expected -; then

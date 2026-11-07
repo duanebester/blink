@@ -5,6 +5,7 @@ import ./blink/bytes.bend as B
 import ./blink/frame.bend as F
 import ./blink/wire.bend as W
 import ./blink/rows.bend as R
+import ./blink/auth.bend as A
 
 # LAW: how TCP cuts the stream into reads never changes what the framer
 # sees: feeding a then b is feeding a ++ b.
@@ -37,3 +38,18 @@ law error_fields:
 law typed_row:
   {R.decode([R.Col.Int{}, R.Col.Text{}], [Some{[45, 52, 50]}, None{}])
     == (Some{R.Int{True{}, 42}}, (None{}, Unit{})) : R.Row([R.Col.Int{}, R.Col.Text{}])}
+
+# LAW: SCRAM's last step accepts only the signature it expects, so a server
+# that doesn't know the password can't finish the login.
+law scram_signature_checked:
+  {A.answer(12, B.utf8("v=AAAA"), A.Login.Verify{B.utf8("BBBB")})
+    == A.Answer.Fail{"the server's SCRAM signature is wrong"} : A.Answer}
+
+law scram_signature_accepted:
+  {A.answer(12, B.utf8("v=BBBB"), A.Login.Verify{B.utf8("BBBB")})
+    == A.Answer.Send{A.Login.Done{}, Nil{}} : A.Answer}
+
+# LAW: nor can it skip the proof and declare the login done.
+law scram_not_skipped:
+  {A.answer(0, Nil{}, A.Login.Verify{B.utf8("BBBB")})
+    == A.Answer.Fail{"the server ended SCRAM without proving it knows the password"} : A.Answer}

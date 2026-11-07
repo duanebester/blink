@@ -11,8 +11,11 @@ jobs:
     services:
       postgres:
         image: postgres:17
+        # md5 in pg_hba asks each user for the kind of password it stores:
+        # SCRAM for postgres, MD5 for blink_md5 below.
         env:
-          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_PASSWORD: blink
+          POSTGRES_HOST_AUTH_METHOD: md5
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 15
@@ -22,8 +25,10 @@ jobs:
       BEND_NO_TELEMETRY: "1"
       PGHOST: 127.0.0.1
       PGUSER: postgres
+      PGPASSWORD: blink
       PGDATABASE: postgres
       BLINK_LIVE: "1"
+      BLINK_AUTH: "postgres:blink blink_md5:md5pass"
     steps:
       - uses: actions/checkout@v7
 
@@ -41,5 +46,8 @@ jobs:
       - name: Tools
         run: bend version && clang --version | head -1 && psql --version
 
-      - name: Laws, replay and live checks
+      - name: An MD5 user
+        run: psql -c "SET password_encryption = 'md5'" -c "CREATE USER blink_md5 PASSWORD 'md5pass'"
+
+      - name: Laws, replay, vectors and live checks
         run: scripts/test.sh

@@ -34,24 +34,15 @@ def go(fuel: Nat, r: Replay, c: B.Cut) -> Replay:
               go(f, chunk(r, bytes), B.split(h <> t, 7n))
 
 def replay(+server: List<&2, U32>) -> Replay:
-  go(List.length(&2, U32, server), Replay{S.connect("trusty", "world", ["SELECT 1::int4 AS one, 'héllo'::text AS t, NULL::text AS n, true AS b, -42 AS neg; SELECT 1/0", "SELECT 'after' AS a"]), Nil{}},
+  go(List.length(&2, U32, server), Replay{S.connect("trusty", "", "world", Nil{}, ["SELECT 1::int4 AS one, 'héllo'::text AS t, NULL::text AS n, true AS b, -42 AS neg; SELECT 1/0", "SELECT 'after' AS a"]), Nil{}},
     B.split(server, 7n))
-
-def eq(a: List<&2, U32>, b: List<&2, U32>) -> Bool:
-  match a b:
-    case Nil{} Nil{}:
-      True{}
-    case x <> xs y <> ys:
-      Bool.and(U32.is_eq(x, y), eq(xs, ys))
-    case _ _:
-      False{}
 
 def report(r: Replay, client: List<&2, U32>) -> IO(Unit):
   match r:
     case Replay{c, out}:
       do IO<Unit>:
         List.for_each(~&2, ~S.Reply, ~(r => IO.print(S.show(r))), S.replies(c))
-        IO.print(Bool.pick(String, eq(out, client), "client bytes match", "client bytes differ"))
+        IO.print(Bool.pick(String, B.eq(out, client), "client bytes match", "client bytes differ"))
 
 def read.got(m: File & Result<&1, &1, U32 & String, List<&2, U32>>) -> IO(List<&2, U32>):
   (f, r) = m
