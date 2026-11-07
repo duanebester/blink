@@ -29,7 +29,7 @@ ones with parameters, batched rows and cancellation.
 | [`crypto`](blink/crypto.bend) | MD5, SHA-256, HMAC, PBKDF2, base64 |
 | [`auth`](blink/auth.bend) | Each auth request's answer, SCRAM included: `answer(code, data, login)` |
 | [`rows`](blink/rows.bend) | Cells → values by type OID; untyped records, and typed rows where `Row(schema)` computes the Bend type |
-| [`session`](blink/session.bend) | The protocol state machine: `react(Session, Backend)`. `Conn` adds the framer, so a read is `receive(conn, bytes)`, then `take` the bytes to send |
+| [`session`](blink/session.bend) | The protocol state machine: `react(Session, Backend)`. `Conn` adds the framer, so a read is `receive(conn, bytes)`, then `take` the bytes to send. Rows stay raw until `replies`, which decodes them in parallel |
 | [`io`](blink/io.bend) | The only effects: `run(host, port, user, password, database, queries)`, and a CancelRequest when a query times out |
 
 [`LAWS.bend`](LAWS.bend) states facts about the pure core and
@@ -109,6 +109,24 @@ also tests those logins). GitHub Actions runs it against PostgreSQL 17, over
 SCRAM and MD5, on every push and pull request. `tests/fixtures/capture.py`
 re-records the session as `PGUSER=trusty PGDATABASE=world`.
 
+## Performance
+
+Against Postgres 17 over SCRAM on a 12-core Ryzen AI 9 HX 370, best of 5.
+Python and Node times exclude interpreter startup but include loading the
+driver; Blink's include its whole process. Bulk numbers use all cores.
+
+| | Login + `SELECT 1` | 1,000 small queries | 100k rows × 3 cols | 100k × 100-char text | 1M × 3 cols |
+|---|---|---|---|---|---|
+| asyncpg | 20 ms | 100 ms | 0.05 s | 0.05 s | 0.32 s |
+| postgres.js | 27 ms | 57 ms | 0.05 s | 0.07 s | 0.24 s |
+| psycopg 3 (libpq) | 47 ms | 64 ms | 0.08 s | 0.08 s | 0.35 s |
+| Blink, native | **7–10 ms** | **27–40 ms** | 0.17 s | 0.49 s | 1.7 s |
+
+Blink is quick to connect and to run small queries, and 2–10× slower on
+bulk rows. Rows decode in parallel lanes, up to 1.8× faster on all cores than on
+one; framing stays on one thread. The JS build is about 6× slower than
+native.
+
 ## Limitations
 
 - IPv4 TCP only: Bend has no DNS, TLS, IPv6 or Unix sockets.
@@ -118,15 +136,16 @@ re-records the session as `PGUSER=trusty PGDATABASE=world`.
 - No LISTEN/NOTIFY, and `COPY … FROM STDIN` fails (Blink has no data to send).
 - One connection per `run`, all replies held in memory; no streaming or pool.
 - Values are text except bool and int2/int4 (Bend has no signed ints, U64 or F64 yet).
-- About 7× slower than `psql` natively: 100k rows in 0.8 s.
+- Slow on bulk rows (below): bytes arrive as one list cell each, and a
+  `String` is a list of characters.
 
 [`docs/research.md`](docs/research.md) has the background on each, and
 [`docs/skunk.md`](docs/skunk.md) what to take from Skunk next.
 
 ## Next
 
-Streaming replies over a `Chan` (so a reader can cancel or stop early), a
-pool, LISTEN/NOTIFY, then speed.
+Streaming replies over a `Chan` (so a reader can cancel or stop early),
+text values kept as bytes until read, a pool, then LISTEN/NOTIFY.
 
 ## Credits
 
