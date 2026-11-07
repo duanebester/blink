@@ -34,3 +34,6 @@ def Laws.scram_signature_accepted():
 
 def Laws.scram_not_skipped():
   {==}
+
+def Laws.failed_login_stays_failed():
+  {==}

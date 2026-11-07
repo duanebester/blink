@@ -57,8 +57,7 @@ def auth(a: A.Answer, queue: List<&2, String>, fields: List<&2, W.Field>,
     case A.Answer.Fail{message}:
       Session{3, A.Login.Done{}, queue, fields, out, Reply.Error{"FATAL", "28000", message} <> replies}
 
-# One backend message in.
-def react(s: Session, msg: W.Backend) -> Session:
+def react.go(s: Session, msg: W.Backend) -> Session:
   match s:
     case Session{+phase, login, queue, +fields, out, replies}:
       match msg:
@@ -78,6 +77,24 @@ def react(s: Session, msg: W.Backend) -> Session:
           Session{phase, login, queue, fields, out, Reply.Notice{severity, code, message} <> replies}
         case _:
           Session{phase, login, queue, fields, out, replies}
+
+def failed(s: Session) -> Bool:
+  match s:
+    case Session{phase, login, queue, fields, out, replies}:
+      U32.is_eq(phase, 3)
+
+def react.unless(failed: Bool, s: Session, msg: W.Backend) -> Session:
+  match failed:
+    case True{}:
+      s
+    case False{}:
+      react.go(s, msg)
+
+# One backend message in. A failed session takes no more: whatever the
+# server sends after a failed login, such as its own AuthenticationOk and
+# ReadyForQuery, must not start a query.
+def react(+s: Session, msg: W.Backend) -> Session:
+  react.unless(failed(s), s, msg)
 
 # Frames in, each decoded to its message.
 def react_frames(s: Session, frames: List<&2, F.Frame>) -> Session:

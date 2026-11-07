@@ -6,6 +6,7 @@ import ./blink/frame.bend as F
 import ./blink/wire.bend as W
 import ./blink/rows.bend as R
 import ./blink/auth.bend as A
+import ./blink/session.bend as S
 
 # LAW: how TCP cuts the stream into reads never changes what the framer
 # sees: feeding a then b is feeding a ++ b.
@@ -53,3 +54,13 @@ law scram_signature_accepted:
 law scram_not_skipped:
   {A.answer(0, Nil{}, A.Login.Verify{B.utf8("BBBB")})
     == A.Answer.Fail{"the server ended SCRAM without proving it knows the password"} : A.Answer}
+
+# LAW: once a login fails, nothing the server sends next starts a query:
+# a SASL final out of turn, then AuthenticationOk and ReadyForQuery, leave
+# nothing to send but the startup message.
+law failed_login_stays_failed:
+  {Pair.fst(List<&2, U32>, S.Conn, S.take(S.receive(
+    S.connect("u", "pw", "db", Nil{}, ["SELECT 1"]),
+    List.concat(&2, U32, [[82, 0, 0, 0, 8, 0, 0, 0, 12], [82, 0, 0, 0, 8, 0, 0, 0, 0],
+      [90, 0, 0, 0, 5, 73]]))))
+    == W.startup("u", "db") : List<&2, U32>}
