@@ -80,7 +80,8 @@ scripts/test.sh
 It checks the laws, replays a recorded session
 ([`tests/fixtures`](tests/fixtures)) through the pure core on both lanes, and,
 if a server is reachable, compares Blink with `psql` on live queries
-(`BLINK_LIVE=1` fails instead of skipping). `tests/fixtures/capture.py`
+(`BLINK_LIVE=1` fails instead of skipping). GitHub Actions runs it against
+PostgreSQL 17 on every push and pull request. `tests/fixtures/capture.py`
 re-records the session as `PGUSER=trusty PGDATABASE=world`.
 
 ## Limitations
