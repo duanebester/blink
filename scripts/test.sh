@@ -1,0 +1,88 @@
+#!/bin/sh
+# Blink's tests, from the repo root or anywhere:
+#
+#   scripts/test.sh            proofs, replay (JS and native), live if reachable
+#   BLINK_LIVE=1 scripts/test.sh   fail instead of skipping when no server
+#
+# The live part connects as libpq would, from PGHOST (default 127.0.0.1),
+# PGPORT, PGUSER and PGDATABASE, with trust auth, and compares Blink's rows
+# with `psql -qAt` on the same queries. BEND picks the bend command.
+set -eu
+cd "$(dirname "$0")/.."
+BEND=${BEND:-bend}
+export PGHOST="${PGHOST:-127.0.0.1}"
+mkdir -p build
+fails=0
+pass() { printf 'ok    %s\n' "$1"; }
+fail() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
+
+# 1. the laws (pure, no server)
+if out=$($BEND PROOF.bend 2>&1) && printf '%s\n' "$out" | grep -q '^ALL PROOFS CHECK'; then
+  pass "laws: bend PROOF.bend"
+else
+  printf '%s\n' "$out"; fail "laws: bend PROOF.bend"
+fi
+
+# 2. a recorded session through the pure pipeline (no server), on both lanes
+if $BEND tests/replay.bend | diff -u tests/replay.expected -; then
+  pass "replay (JS lane)"
+else
+  fail "replay (JS lane)"
+fi
+if $BEND tests/replay.bend -o build/replay >/dev/null && ./build/replay | diff -u tests/replay.expected -; then
+  pass "replay (native)"
+else
+  fail "replay (native)"
+fi
+
+# 3. a live server
+$BEND examples/query.bend -o build/query >/dev/null
+if ! ./build/query "SELECT 1" >/dev/null 2>&1; then
+  if [ "${BLINK_LIVE:-0}" = 1 ]; then
+    ./build/query "SELECT 1" || true
+    fail "live: no server at $PGHOST:${PGPORT:-5432} with trust auth"
+  else
+    printf 'skip  live: no server at %s:%s with trust auth (see README)\n' "$PGHOST" "${PGPORT:-5432}"
+  fi
+else
+  psql_each() { # sql...: psql -c for each
+    n=$#
+    while [ "$n" -gt 0 ]; do set -- "$@" -c "$1"; shift; n=$((n - 1)); done
+    psql -X -qAt -v ON_ERROR_STOP=1 "$@"
+  }
+  same() { # name, sql...: Blink's stdout must equal psql's
+    name=$1; shift
+    if ! command -v psql >/dev/null 2>&1; then
+      printf 'skip  live: %s (no psql to compare with)\n' "$name"; return
+    fi
+    if ./build/query "$@" >build/blink.out && psql_each "$@" >build/psql.out \
+      && diff -u build/psql.out build/blink.out >/dev/null; then
+      pass "live: $name ($(wc -l <build/blink.out | tr -d ' ') rows, same as psql)"
+    else
+      diff -u build/psql.out build/blink.out | head -20; fail "live: $name"
+    fi
+  }
+  same "types and NULL" "SELECT 1::int4 AS one, 'héllo'::text AS t, NULL::text AS n, true AS b, -42 AS neg"
+  same "edges" "SELECT (-2147483648)::int4, 32767::int2, 9223372036854775807::int8, 1.5::float8, '2026-11-07'::date, '\\x00ff'::bytea, ''::text"
+  same "two statements" "SELECT 1 AS a; SELECT 'x' AS b, NULL AS c"
+  same "two queries" "SELECT 'first'" "SELECT 'second'"
+  same "10,000 rows" "SELECT g, 'city-' || g, g % 3 = 0 FROM generate_series(1, 10000) g"
+  same "catalog" "SELECT * FROM pg_type ORDER BY oid LIMIT 100"
+  if ./build/query "SELECT 1/0" "SELECT 'still runs'" >build/blink.out 2>build/blink.err; then
+    fail "live: an error exits 1"
+  elif grep -q '22012: division by zero' build/blink.err && grep -qx 'still runs' build/blink.out; then
+    pass "live: an error fails its query only, and exits 1"
+  else
+    cat build/blink.err; fail "live: an error fails its query only"
+  fi
+  if $BEND examples/query.bend "SELECT 'héllo' AS t, NULL AS n" | grep -qx 'héllo|'; then
+    pass "live: JS lane"
+  else
+    fail "live: JS lane"
+  fi
+fi
+
+if [ "$fails" -ne 0 ]; then
+  printf '%s failed\n' "$fails"; exit 1
+fi
+echo "all passed"

@@ -1,0 +1,8 @@
+columns one:23 t:25 n:25 b:16 neg:23
+row 1|héllo||t|-42
+complete SELECT 1
+error ERROR 22012 division by zero
+columns a:25
+row after
+complete SELECT 1
+client bytes match
