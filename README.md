@@ -55,7 +55,7 @@ errors go to stderr with exit code 1:
 bend examples/query.bend "SELECT 1 AS one, 'héllo' AS t, NULL AS n, true AS b"
 # 1|héllo||t
 bend examples/query.bend -- --replies "SELECT 1 AS a"   # every reply
-bend examples/query.bend -o build/query && ./build/query "SELECT now()"   # native
+mkdir -p build && bend examples/query.bend -o build/query && ./build/query "SELECT now()"   # native
 ```
 
 From Bend:
