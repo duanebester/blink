@@ -46,3 +46,12 @@ def Laws.batches_continue():
 
 def Laws.cancel_stops_batches():
   {==}
+
+def Laws.cancel_bounded():
+  {==}
+
+def Laws.copy_in_refused():
+  {==}
+
+def Laws.forged_scram_refused():
+  {==}

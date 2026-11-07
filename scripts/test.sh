@@ -84,6 +84,7 @@ else
   same "two queries" "SELECT 'first'" "SELECT 'second'"
   same "10,000 rows" "SELECT g, 'city-' || g, g % 3 = 0 FROM generate_series(1, 10000) g"
   same "catalog" "SELECT * FROM pg_type ORDER BY oid LIMIT 100"
+  same "COPY TO STDOUT" "COPY (SELECT g, 'héllo', NULL FROM generate_series(1, 3) g) TO STDOUT"
   flags="--fetch 333"
   same "10,000 rows, 333 at a time" "SELECT g, 'city-' || g, g % 3 = 0 FROM generate_series(1, 10000) g"
   flags=
@@ -102,6 +103,14 @@ else
     pass "live: a timeout cancels the query on the server; the next one runs"
   else
     cat build/blink.err; fail "live: cancel"
+  fi
+  if timeout 30 ./build/query "CREATE TEMP TABLE c (x int)" "COPY c FROM STDIN" --fetch 2 "COPY c FROM STDIN" \
+    "SELECT 'still runs'" >build/blink.out 2>build/blink.err; then
+    fail "live: COPY FROM STDIN exits 1"
+  elif [ "$(grep -c '^ERROR 57014: COPY from stdin failed' build/blink.err)" = 2 ] && grep -qx 'still runs' build/blink.out; then
+    pass "live: COPY FROM STDIN fails, simple and extended; the next query runs"
+  else
+    cat build/blink.err; fail "live: COPY FROM STDIN"
   fi
   if ./build/query "SELECT 1/0" "SELECT 'still runs'" >build/blink.out 2>build/blink.err; then
     fail "live: an error exits 1"

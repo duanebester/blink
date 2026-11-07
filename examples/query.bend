@@ -12,6 +12,7 @@
 #   bend examples/query.bend "SELECT 1 AS one"
 #   bend examples/query.bend -- --param 41 "SELECT \$1::int4 + 1"
 import Base
+import ../blink/bytes.bend as B
 import ../blink/rows.bend as R
 import ../blink/session.bend as S
 import ../blink/io.bend as Blink
@@ -26,10 +27,14 @@ def print(r: S.Reply) -> IO(Unit):
   match r:
     case S.Reply.Row{es}:
       IO.print(R.show(es))
+    case S.Reply.Copy{data}:
+      IO.write(B.text(data))
     case S.Reply.Error{severity, code, message}:
       IO.print_err(severity ++ " " ++ code ++ ": " ++ message)
     case S.Reply.Cancelled{}:
       IO.print_err("cancelled")
+    case S.Reply.Refused{reason}:
+      IO.print_err("refused: " ++ reason)
     case S.Reply.Closed{reason}:
       IO.print_err("closed: " ++ reason)
     case _:
@@ -47,6 +52,8 @@ def failed(r: S.Reply) -> Bool:
     case S.Reply.Error{severity, code, message}:
       True{}
     case S.Reply.Cancelled{}:
+      True{}
+    case S.Reply.Refused{reason}:
       True{}
     case S.Reply.Closed{reason}:
       True{}

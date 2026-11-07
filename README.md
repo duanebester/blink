@@ -84,10 +84,13 @@ A `Simple` query may hold several statements. An `Extended{sql, params,
 fetch, timeout}` is one statement, with `params` as `$1, $2…` (`None` is
 NULL), never spliced into the SQL. With `fetch > 0`, rows come `fetch` at a
 time. With `timeout > 0`, a server that stays silent that long gets a
-CancelRequest, and no more batches are asked for.
+CancelRequest, and no more batches are asked for; if it stays silent
+that long again, the connection closes.
 
-`run` returns the replies in order (`Columns`, a `Row` per row, `Complete`
-per statement); an `Error` ends only its own query, `Cancelled` marks a
+`run` returns the replies in order (`Columns`, a `Row` per row, a `Copy`
+per `COPY … TO STDOUT` line, `Complete` per statement). An `Error` is the
+server's and ends only its own query; `Refused` is Blink rejecting the
+server during login (say, a wrong SCRAM signature); `Cancelled` marks a
 timeout, and `Closed` means the connection failed. [`examples/cities.bend`](examples/cities.bend) is a complete
 program: it matches rows by shape and folds over them.
 
@@ -112,12 +115,13 @@ re-records the session as `PGUSER=trusty PGDATABASE=world`.
 - SCRAM without SASLprep or channel binding (as libpq over plain TCP); use ASCII passwords.
 - Extended queries use the unnamed statement (no prepared-statement cache), text format only.
 - Cancellation is by timeout: there's no streaming yet, so nothing else could fire it.
-- No LISTEN/NOTIFY.
+- No LISTEN/NOTIFY, and `COPY … FROM STDIN` fails (Blink has no data to send).
 - One connection per `run`, all replies held in memory; no streaming or pool.
 - Values are text except bool and int2/int4 (Bend has no signed ints, U64 or F64 yet).
 - About 7× slower than `psql` natively: 100k rows in 0.8 s.
 
-[`docs/research.md`](docs/research.md) has the background on each.
+[`docs/research.md`](docs/research.md) has the background on each, and
+[`docs/skunk.md`](docs/skunk.md) what to take from Skunk next.
 
 ## Next
 

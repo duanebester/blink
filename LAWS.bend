@@ -94,3 +94,37 @@ law cancel_stops_batches:
       [115, 0, 0, 0, 4]))))
     == ([0, 0, 0, 16, 4, 210, 22, 46, 0, 0, 0, 7, 0, 0, 0, 9], [67, 0, 0, 0, 6, 80, 0, 83, 0, 0, 0, 4])
     : List<&2, U32> & List<&2, U32>}
+
+# LAW: a second missed deadline, after the cancel went unanswered (or there
+# was no key to send), closes the connection instead of waiting forever.
+law cancel_bounded:
+  {(Pair.fst(List<&2, U32>, S.Conn, S.cancel(Pair.snd(List<&2, U32>, S.Conn, S.cancel(batching())))),
+    S.open(Pair.snd(List<&2, U32>, S.Conn, S.cancel(Pair.snd(List<&2, U32>, S.Conn, S.cancel(batching()))))))
+    == (Nil{}, False{}) : List<&2, U32> & Bool}
+
+# A session logged in (trust) running q, given CopyInResponse and then the
+# error that follows CopyFail: what it sends.
+def copying(q: S.Query) -> List<&2, U32>:
+  Pair.fst(List<&2, U32>, S.Conn, S.take(S.receive(
+    Pair.snd(List<&2, U32>, S.Conn, S.take(S.receive(S.connect("u", "", "db", Nil{}, [q]),
+      List.append(&2, U32, [82, 0, 0, 0, 8, 0, 0, 0, 0], [90, 0, 0, 0, 5, 73])))),
+    List.append(&2, U32, [71, 0, 0, 0, 9, 0, 0, 1, 0, 0],
+      [69, 0, 0, 0, 22, 83, 69, 82, 82, 79, 82, 0, 67, 53, 55, 48, 49, 52, 0, 77, 120, 0, 0]))))
+
+# LAW: COPY FROM STDIN is refused with CopyFail rather than left waiting. An
+# extended query also needs a Sync, since the server ignored the one sent
+# during copy-in; a simple one must not get one. Bytes from Python's struct.
+law copy_in_refused:
+  {(copying(S.Query.Simple{"COPY t FROM STDIN"}), copying(S.Query.Extended{"COPY t FROM STDIN", [], 0, 0}))
+    == ([102, 0, 0, 0, 31, 66, 108, 105, 110, 107, 32, 99, 97, 110, 39, 116, 32, 115, 101, 110, 100, 32,
+        67, 79, 80, 89, 32, 100, 97, 116, 97, 0],
+      [102, 0, 0, 0, 31, 66, 108, 105, 110, 107, 32, 99, 97, 110, 39, 116, 32, 115, 101, 110, 100, 32,
+        67, 79, 80, 89, 32, 100, 97, 116, 97, 0, 83, 0, 0, 0, 4]) : List<&2, U32> & List<&2, U32>}
+
+# LAW: a wrong SCRAM signature reaches the caller as Blink's Refused, not as
+# an Error the server could have sent.
+law forged_scram_refused:
+  {S.replies(S.receive(S.Conn{F.new(), S.Session{0, A.Login.Verify{B.utf8("BBBB")}, Nil{},
+      S.Run{True{}, 0, 0, True{}, False{}}, Nil{}, Nil{}, Nil{}, Nil{}}},
+      [82, 0, 0, 0, 14, 0, 0, 0, 12, 118, 61, 65, 65, 65, 65]))
+    == [S.Reply.Refused{"the server's SCRAM signature is wrong"}] : List<&2, S.Reply>}

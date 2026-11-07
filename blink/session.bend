@@ -3,6 +3,7 @@
 # a queue of queries, one at a time, then says goodbye. The IO shell
 # (io.bend) only moves bytes between the socket and this.
 import Base
+import ./bytes.bend as B
 import ./frame.bend as F
 import ./wire.bend as W
 import ./auth.bend as A
@@ -18,22 +19,27 @@ type Query is Data:
   Query.Simple{sql: String}
   Query.Extended{sql: String, params: List<&2, Maybe<&2, String>>, fetch: U32, timeout: U32}
 
-# What a caller sees, in order: the replies to its queries. Cancelled is
-# Blink giving up on a query; the server's error for it may follow.
+# What a caller sees, in order: the replies to its queries. Copy is a row of
+# COPY ... TO STDOUT, as the server formats it. Cancelled is Blink giving up
+# on a query; the server's error for it may follow. Refused is Blink
+# refusing the server during login, such as one whose SCRAM signature is
+# wrong; Error is always the server's own.
 type Reply is Data:
   Reply.Columns{fields: List<&2, W.Field>}
   Reply.Row{entries: List<&2, R.Entry>}
   Reply.Complete{tag: String}
   Reply.Error{severity: String, code: String, message: String}
   Reply.Notice{severity: String, code: String, message: String}
+  Reply.Copy{data: List<&2, U32>}
   Reply.Cancelled{}
+  Reply.Refused{reason: String}
   Reply.Closed{reason: String}
 
-# The running query: its batch size (0 for all rows at once), its timeout,
+# The running query: whether it is a simple query, its batch size (0 for all rows at once), its timeout,
 # whether its Sync is sent (the server then answers ReadyForQuery), and
 # whether it was cancelled.
 type Run is Data:
-  Run{fetch: U32, timeout: U32, synced: Bool, stopped: Bool}
+  Run{simple: Bool, fetch: U32, timeout: U32, synced: Bool, stopped: Bool}
 
 # phase 0 is startup, 1 a query running, 2 done (Terminate sent), 3 failed.
 # login is where authentication stands; key is the CancelRequest the server's
@@ -53,24 +59,24 @@ def reply(s: Session, r: Reply) -> Session:
 # server skips everything up to it.
 def sync(s: Session) -> Session:
   match s:
-    case Session{phase, login, queue, Run{fetch, timeout, synced, stopped}, key, fields, out, replies}:
+    case Session{phase, login, queue, Run{simple, fetch, timeout, synced, stopped}, key, fields, out, replies}:
       match synced:
         case True{}:
-          Session{phase, login, queue, Run{fetch, timeout, True{}, stopped}, key, fields, out, replies}
+          Session{phase, login, queue, Run{simple, fetch, timeout, True{}, stopped}, key, fields, out, replies}
         case False{}:
-          Session{phase, login, queue, Run{fetch, timeout, True{}, stopped}, key, fields,
+          Session{phase, login, queue, Run{simple, fetch, timeout, True{}, stopped}, key, fields,
             List.append(&2, U32, out, W.sync()), replies}
 
 # A batch is done: ask for the next, or, once cancelled, close the portal.
 def suspended(s: Session) -> Session:
   match s:
-    case Session{phase, login, queue, Run{+fetch, timeout, synced, stopped}, key, fields, out, replies}:
+    case Session{phase, login, queue, Run{simple, +fetch, timeout, synced, stopped}, key, fields, out, replies}:
       match stopped:
         case True{}:
-          Session{phase, login, queue, Run{fetch, timeout, True{}, True{}}, key, fields,
+          Session{phase, login, queue, Run{simple, fetch, timeout, True{}, True{}}, key, fields,
             List.concat(&2, U32, [out, W.close(), W.sync()]), replies}
         case False{}:
-          Session{phase, login, queue, Run{fetch, timeout, synced, False{}}, key, fields,
+          Session{phase, login, queue, Run{simple, fetch, timeout, synced, False{}}, key, fields,
             List.concat(&2, U32, [out, W.execute(fetch), W.flush()]), replies}
 
 # A batched query flushes instead of syncing: Sync would end the implicit
@@ -86,9 +92,9 @@ def ending(+fetch: U32) -> List<&2, U32>:
 def start(q: Query) -> Run & List<&2, U32>:
   match q:
     case Query.Simple{sql}:
-      (Run{0, 0, True{}, False{}}, W.query(sql))
+      (Run{True{}, 0, 0, True{}, False{}}, W.query(sql))
     case Query.Extended{sql, params, +fetch, timeout}:
-      (Run{fetch, timeout, U32.is_eq(fetch, 0), False{}},
+      (Run{False{}, fetch, timeout, U32.is_eq(fetch, 0), False{}},
         List.concat(&2, U32, [W.parse(sql), W.bind(params), W.describe(), W.execute(fetch), ending(fetch)]))
 
 def started(p: Run & List<&2, U32>, login: A.Login, queue: List<&2, Query>, key: List<&2, U32>,
@@ -129,8 +135,7 @@ def auth(s: Session, a: A.Answer) -> Session:
         case A.Answer.Send{login, bytes}:
           Session{0, login, queue, run, key, fields, List.append(&2, U32, out, bytes), replies}
         case A.Answer.Fail{message}:
-          Session{3, A.Login.Done{}, queue, run, key, fields, out,
-            Reply.Error{"FATAL", "28000", message} <> replies}
+          Session{3, A.Login.Done{}, queue, run, key, fields, out, Reply.Refused{message} <> replies}
 
 def keyed(s: Session, pid: U32, secret: U32) -> Session:
   match s:
@@ -146,6 +151,15 @@ def row(s: Session, cells: List<&2, Maybe<&2, List<&2, U32>>>) -> Session:
   match s:
     case Session{phase, login, queue, run, key, +fields, out, replies}:
       Session{phase, login, queue, run, key, fields, out, Reply.Row{R.record(fields, cells)} <> replies}
+
+# COPY FROM STDIN wants data Blink can't send, so it refuses with CopyFail
+# and the server answers with an error. The server ignores a Sync sent
+# during copy-in, so an extended query needs another: the error sends it.
+def copy_in(s: Session) -> Session:
+  match s:
+    case Session{phase, login, queue, Run{+simple, fetch, timeout, synced, stopped}, key, fields, out, replies}:
+      Session{phase, login, queue, Run{simple, fetch, timeout, simple, stopped}, key, fields,
+        List.append(&2, U32, out, W.copy_fail("Blink can't send COPY data")), replies}
 
 def login(s: Session) -> A.Login:
   match s:
@@ -170,6 +184,10 @@ def react.go(+s: Session, msg: W.Backend) -> Session:
       sync(s)
     case W.Backend.Suspended{}:
       suspended(s)
+    case W.Backend.CopyIn{}:
+      copy_in(s)
+    case W.Backend.CopyData{data}:
+      reply(s, Reply.Copy{data})
     case W.Backend.Error{severity, code, message}:
       error(s, Reply.Error{severity, code, message})
     case W.Backend.Notice{severity, code, message}:
@@ -208,7 +226,7 @@ type Conn is Data:
 def connect(+user: String, password: String, database: String, nonce: List<&2, U32>,
   queue: List<&2, Query>) -> Conn:
   Conn{F.new(), Session{0, A.Login.Start{user, password, nonce}, queue,
-    Run{0, 0, True{}, False{}}, Nil{}, Nil{}, W.startup(user, database), Nil{}}}
+    Run{True{}, 0, 0, True{}, False{}}, Nil{}, Nil{}, W.startup(user, database), Nil{}}}
 
 def receive.go(p: List<&2, F.Frame> & F.Rx, se: Session) -> Conn:
   (frames, rx) = p
@@ -244,27 +262,35 @@ def open(c: Conn) -> Bool:
     case Conn{rx, Session{phase, login, queue, run, key, fields, out, replies}}:
       U32.is_lt(phase, 2)
 
-def deadline.at(+phase: U32, stopped: Bool, timeout: U32) -> U32:
+def deadline.at(+phase: U32, timeout: U32) -> U32:
   match phase:
     case 1:
-      Bool.pick(U32, stopped, 0, timeout)
+      timeout
     case _:
       0
 
 # How long to wait for the server before cancelling, in ms; 0 is forever.
+# After a cancel the same deadline holds again.
 def deadline(c: Conn) -> U32:
   match c:
-    case Conn{rx, Session{phase, login, queue, Run{fetch, timeout, synced, stopped}, key, fields, out, replies}}:
-      deadline.at(phase, stopped, timeout)
+    case Conn{rx, Session{phase, login, queue, Run{simple, fetch, timeout, synced, stopped}, key, fields, out, replies}}:
+      deadline.at(phase, timeout)
 
-# The running query's deadline (above) passed: it stops getting batches, the caller
-# gets Cancelled, and the shell gets the CancelRequest to send on a new
-# connection (empty if the server gave no key).
+# The running query's deadline (above) passed. The first time, it stops
+# getting batches, the caller gets Cancelled, and the shell gets the
+# CancelRequest to send on a new connection (empty if the server gave no
+# key). The second time, the server ignored the cancel, or it never arrived:
+# the connection closes.
 def cancel(c: Conn) -> List<&2, U32> & Conn:
   match c:
-    case Conn{rx, Session{phase, login, queue, Run{fetch, timeout, synced, stopped}, +key, fields, out, replies}}:
-      (key, Conn{rx, Session{phase, login, queue, Run{fetch, timeout, synced, True{}}, key, fields, out,
-        Reply.Cancelled{} <> replies}})
+    case Conn{rx, Session{phase, login, queue, Run{simple, fetch, timeout, synced, stopped}, +key, fields, out, replies}}:
+      match stopped:
+        case True{}:
+          (Nil{}, closed(Conn{rx, Session{phase, login, queue, Run{simple, fetch, timeout, synced, True{}}, key,
+            fields, out, replies}}, "no answer after the cancel"))
+        case False{}:
+          (key, Conn{rx, Session{phase, login, queue, Run{simple, fetch, timeout, synced, True{}}, key, fields, out,
+            Reply.Cancelled{} <> replies}})
 
 # ---- showing replies, one line each
 
@@ -274,6 +300,17 @@ def show.fields(fs: List<&2, W.Field>) -> String:
       ""
     case W.Field{name, oid} <> rest:
       " " ++ name ++ ":" ++ U32.show(oid) ++ show.fields(rest)
+
+def chomp.rev(xs: List<&2, U32>) -> List<&2, U32>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case +x <> +rest:
+      Bool.pick(List<&2, U32>, U32.is_eq(x, 10), rest, x <> rest)
+
+# The bytes without a final newline.
+def chomp(xs: List<&2, U32>) -> List<&2, U32>:
+  List.reverse(&2, U32, chomp.rev(List.reverse(&2, U32, xs)))
 
 def show(e: Reply) -> String:
   match e:
@@ -287,7 +324,11 @@ def show(e: Reply) -> String:
       "error " ++ severity ++ " " ++ code ++ " " ++ message
     case Reply.Notice{severity, code, message}:
       "notice " ++ severity ++ " " ++ code ++ " " ++ message
+    case Reply.Copy{data}:
+      "copy " ++ B.text(chomp(data))
     case Reply.Cancelled{}:
       "cancelled"
+    case Reply.Refused{reason}:
+      "refused " ++ reason
     case Reply.Closed{reason}:
       "closed " ++ reason

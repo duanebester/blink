@@ -87,6 +87,10 @@ def sync() -> List<&2, U32>:
 def cancel_request(pid: U32, secret: U32) -> List<&2, U32>:
   List.concat(&2, U32, [[0, 0, 0, 16], B.be32(80877102), B.be32(pid), B.be32(secret)])
 
+# 'f': refuse a COPY FROM STDIN, which then fails with message.
+def copy_fail(message: String) -> List<&2, U32>:
+  102 <> sized(B.cstring(message))
+
 # 'X': the polite goodbye before closing the socket.
 def terminate() -> List<&2, U32>:
   [88, 0, 0, 0, 4]
@@ -105,6 +109,8 @@ type Backend is Data:
   Backend.Row{cells: List<&2, Maybe<&2, List<&2, U32>>>}
   Backend.Complete{tag: String}
   Backend.Suspended{}
+  Backend.CopyIn{}
+  Backend.CopyData{data: List<&2, U32>}
   Backend.Empty{}
   Backend.Error{severity: String, code: String, message: String}
   Backend.Notice{severity: String, code: String, message: String}
@@ -274,6 +280,10 @@ def decode(f: F.Frame) -> Backend:
           notice(fields(body))
         case 115:
           Backend.Suspended{}
+        case 71:
+          Backend.CopyIn{}
+        case 100:
+          Backend.CopyData{body}
         case 73:
           Backend.Empty{}
         case _:

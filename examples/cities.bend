@@ -27,6 +27,8 @@ def line(r: S.Reply) -> IO(Unit):
       IO.print(name ++ " has " ++ U32.show(pop) ++ " people")
     case S.Reply.Error{severity, code, message}:
       IO.print_err(code ++ ": " ++ message)
+    case S.Reply.Refused{reason}:
+      IO.print_err("refused: " ++ reason)
     case S.Reply.Closed{reason}:
       IO.print_err("closed: " ++ reason)
     case _:
