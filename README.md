@@ -120,15 +120,16 @@ driver; Blink's include its whole process. Bulk numbers use all cores.
 
 | | Login + `SELECT 1` | 1,000 small queries | 100k rows × 3 cols | 100k × 100-char text | 1M × 3 cols |
 |---|---|---|---|---|---|
-| asyncpg | 20 ms | 100 ms | 0.05 s | 0.05 s | 0.32 s |
-| postgres.js | 27 ms | 57 ms | 0.05 s | 0.07 s | 0.24 s |
-| psycopg 3 (libpq) | 47 ms | 64 ms | 0.08 s | 0.08 s | 0.35 s |
-| Blink, native | **7–10 ms** | **27–40 ms** | 0.17 s | 0.49 s | 1.7 s |
+| asyncpg | 20 ms | 100 ms | 0.05 s | 0.05 s | 0.31 s |
+| postgres.js | 27 ms | 57 ms | 0.05 s | 0.07 s | 0.22 s |
+| psycopg 3 (libpq) | 47 ms | 64 ms | 0.08 s | 0.08 s | 0.37 s |
+| Blink, native | **7–10 ms** | **29–42 ms** | 0.11 s | 0.33 s | 1.05 s |
 
-Blink is quick to connect and to run small queries, and 2–10× slower on
-bulk rows. Rows decode in parallel lanes, up to 1.8× faster on all cores than on
-one; framing stays on one thread. The JS build is about 6× slower than
-native.
+Blink is quick to connect and to run small queries, and 2–7× slower on
+bulk rows; it holds every row until the end, so 1M rows take 685 MB
+against the others' 170–280 MB. Reads land in a flat buffer, and rows
+decode in parallel lanes (up to 1.3× faster on all cores than on one). The
+JS build is about 6× slower than native.
 
 ## Limitations
 
