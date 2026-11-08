@@ -14,6 +14,7 @@ import Base
 import ../blink/io.bend as Blink
 import ../blink/session.bend as S
 import ../blink/rows.bend as R
+import ../blink/bytes.bend as B
 
 def env(name: String, d: String) -> IO(String):
   do IO<String>:
@@ -24,7 +25,7 @@ def env(name: String, d: String) -> IO(String):
 def line(r: S.Reply) -> IO(Unit):
   match r:
     case S.Reply.Row{R.Entry{n, R.Value.Text{name}} <> R.Entry{p, R.Value.Int{R.Int{neg, pop}}} <> rest}:
-      IO.print(name ++ " has " ++ U32.show(pop) ++ " people")
+      IO.print(B.text(name) ++ " has " ++ U32.show(pop) ++ " people")
     case S.Reply.Error{severity, code, message}:
       IO.print_err(code ++ ": " ++ message)
     case S.Reply.Refused{reason}:

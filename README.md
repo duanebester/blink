@@ -136,6 +136,7 @@ native.
 - No LISTEN/NOTIFY, and `COPY … FROM STDIN` fails (Blink has no data to send).
 - One connection per `run`, all replies held in memory; no streaming or pool.
 - Values are text except bool and int2/int4 (Bend has no signed ints, U64 or F64 yet).
+  Text stays UTF-8 bytes (`Value.Text{bytes}`) until read with `B.text`.
 - Slow on bulk rows (below): bytes arrive as one list cell each, and a
   `String` is a list of characters.
 

@@ -11,11 +11,12 @@ import ./wire.bend as W
 type Int is Data:
   Int{neg: Bool, abs: U32}
 
+# Text stays UTF-8 bytes until read: B.text turns it into a String.
 type Value is Data:
   Value.Null{}
   Value.Bool{b: Bool}
   Value.Int{n: Int}
-  Value.Text{s: String}
+  Value.Text{bytes: List<&2, U32>}
 
 type Entry is Data:
   Entry{name: String, value: Value}
@@ -46,7 +47,7 @@ def value.int(m: Maybe<&2, Int>, +bytes: List<&2, U32>) -> Value:
     case Some{n}:
       Value.Int{n}
     case None{}:
-      Value.Text{B.text(bytes)}
+      Value.Text{bytes}
 
 def value.text(+oid: U32, +bytes: List<&2, U32>) -> Value:
   match oid:
@@ -57,7 +58,7 @@ def value.text(+oid: U32, +bytes: List<&2, U32>) -> Value:
     case 23:
       value.int(int(bytes), bytes)
     case _:
-      Value.Text{B.text(bytes)}
+      Value.Text{bytes}
 
 # One column's value from its type OID and its cell (None is NULL). int8,
 # numeric, floats, dates and the rest stay text for now.
@@ -91,8 +92,8 @@ def show.value(v: Value) -> String:
       "-" ++ U32.show(abs)
     case Value.Int{Int{False{}, abs}}:
       U32.show(abs)
-    case Value.Text{s}:
-      s
+    case Value.Text{bytes}:
+      B.text(bytes)
 
 def show.go(es: List<&2, Entry>) -> String:
   match es:
