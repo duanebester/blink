@@ -259,23 +259,6 @@ def receive(c: Conn, chunk: List<&2, U32>) -> Conn:
     case Conn{rx, se}:
       receive.go(F.take(F.feed(rx, chunk)), se)
 
-# The bytes left over from the last read, which the next read's buffer
-# must start with, and the connection without them.
-def pending.go(p: List<&2, U32> & F.Rx, se: Session) -> List<&2, U32> & Conn:
-  (rest, rx) = p
-  (rest, Conn{rx, se})
-
-def pending(c: Conn) -> List<&2, U32> & Conn:
-  match c:
-    case Conn{rx, se}:
-      pending.go(F.rest(rx), se)
-
-# One read's buffer in: a[0 .. n] is pending's bytes, then the new ones.
-def receive_buf(c: Conn, a: Array<U32>, +n: U32) -> Conn:
-  match c:
-    case Conn{rx, se}:
-      receive.go(F.take(F.feed_buf(rx, a, n)), se)
-
 # The bytes to send, and the connection without them.
 def take(c: Conn) -> List<&2, U32> & Conn:
   match c:

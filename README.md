@@ -7,11 +7,9 @@
 A PostgreSQL driver in [Bend](https://github.com/bendlang/bend), modelled on
 [Clunk](https://github.com/duanebester/clunk) and
 [Skunk](https://github.com/typelevel/skunk). It needs nothing but Bend: no
-libpq, no packages beyond Base. One small effect,
-[`blink/recv.c`](blink/recv.c) (and `recv.js` for the JS build), reads the
-socket into a flat buffer; Bend compiles it with the rest. It's an early baseline: local TCP, password
-auth (trust, cleartext, MD5, SCRAM-SHA-256), simple queries, and extended
-ones with parameters, batched rows and cancellation.
+libpq, no packages beyond Base, no foreign code. It's an early baseline:
+local TCP, password auth (trust, cleartext, MD5, SCRAM-SHA-256), simple
+queries, and extended ones with parameters, batched rows and cancellation.
 
 ## Design: bytes → messages → records are pure transforms
 
@@ -25,19 +23,19 @@ ones with parameters, batched rows and cancellation.
 
 | Module | Does |
 |---|---|
-| [`bytes`](blink/bytes.bend) | Big-endian ints, C strings, UTF-8, flat byte buffers |
-| [`frame`](blink/frame.bend) | bytes → frames: cuts whole messages from a buffer, DataRows straight into cells, and keeps the leftover bytes for the next read |
+| [`bytes`](blink/bytes.bend) | Big-endian ints, C strings, UTF-8 |
+| [`frame`](blink/frame.bend) | bytes → frames: a fold whose state carries across reads; DataRows come out cut into cells |
 | [`wire`](blink/wire.bend) | Frontend builders; frames → `Backend` messages |
 | [`crypto`](blink/crypto.bend) | MD5, SHA-256, HMAC, PBKDF2, base64 |
 | [`auth`](blink/auth.bend) | Each auth request's answer, SCRAM included: `answer(code, data, login)` |
 | [`rows`](blink/rows.bend) | Cells → values by type OID; untyped records, and typed rows where `Row(schema)` computes the Bend type |
 | [`session`](blink/session.bend) | The protocol state machine: `react(Session, Backend)`. `Conn` adds the framer, so a read is `receive(conn, bytes)`, then `take` the bytes to send. Rows stay raw until `replies`, which decodes them in parallel |
-| [`io`](blink/io.bend) | The only effects: `run(host, port, user, password, database, queries)`, `recv` into a buffer, and a CancelRequest when a query times out |
+| [`io`](blink/io.bend) | The only effects: `run(host, port, user, password, database, queries)`, and a CancelRequest when a query times out |
 
 [`LAWS.bend`](LAWS.bend) states facts about the pure core and
 [`PROOF.bend`](PROOF.bend) proves them; Bend's compiler checks both. For
-example, `feed_split`: cutting a stream into reads at any point never
-changes the frames, and
+example, `feed_split`: for every stream and every way TCP cuts it into
+reads, the frames are the same, and
 `scram_signature_checked`: a server that can't sign doesn't get a login.
 
 ## Quick start
@@ -123,13 +121,12 @@ driver; Blink's include its whole process. Bulk numbers use all cores.
 | asyncpg | 20 ms | 100 ms | 0.05 s | 0.05 s | 0.31 s |
 | postgres.js | 27 ms | 57 ms | 0.05 s | 0.07 s | 0.22 s |
 | psycopg 3 (libpq) | 47 ms | 64 ms | 0.08 s | 0.08 s | 0.37 s |
-| Blink, native | **7–10 ms** | **29–42 ms** | 0.11 s | 0.33 s | 1.05 s |
+| Blink, native | **7–10 ms** | **29–42 ms** | 0.20 s | 0.42 s | 1.8 s |
 
-Blink is quick to connect and to run small queries, and 2–7× slower on
+Blink is quick to connect and to run small queries, and 4–9× slower on
 bulk rows; it holds every row until the end, so 1M rows take 685 MB
-against the others' 170–280 MB. Reads land in a flat buffer, and rows
-decode in parallel lanes (up to 1.3× faster on all cores than on one). The
-JS build is about 6× slower than native.
+against the others' 170–280 MB. Rows decode in parallel lanes. The JS
+build is about 6× slower than native.
 
 ## Limitations
 
@@ -141,11 +138,8 @@ JS build is about 6× slower than native.
 - One connection per `run`, all replies held in memory; no streaming or pool.
 - Values are text except bool and int2/int4 (Bend has no signed ints, U64 or F64 yet).
   Text stays UTF-8 bytes (`Value.Text{bytes}`) until read with `B.text`.
-- Slow on bulk rows (below): cell values are lists of bytes, one list cell
-  each.
-- `recv.c` builds its array with Bend runtime internals, so it may break on
-  a Bend upgrade (Blink pins 2.0.40); `bend --check-only` on `io.bend` or
-  the examples reports it as foreign code.
+- Slow on bulk rows (below): Bend's sockets hand over a list cell per byte,
+  and values stay lists of bytes.
 
 [`docs/research.md`](docs/research.md) has the background on each, and
 [`docs/skunk.md`](docs/skunk.md) what to take from Skunk next.

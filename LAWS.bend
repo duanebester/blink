@@ -14,21 +14,16 @@ def stream() -> List<&2, U32>:
   [90, 0, 0, 0, 5, 73, 68, 0, 0, 0, 17, 0, 2, 255, 255, 255, 255, 0, 0, 0, 3, 104, 195, 169,
     67, 0, 0, 0, 13, 83, 69, 76, 69, 67, 84, 32, 49, 0]
 
-# The stream cut into two reads at k, for every k from n down to 0.
-def splits(+n: Nat) -> List<&2, F.Rx>:
-  match n:
-    case 0n:
-      [F.feed(F.feed(F.new(), Nil{}), stream())]
-    case 1n+p:
-      F.feed(F.feed(F.new(), List.take(&2, U32, stream(), n)), List.drop(&2, U32, stream(), n))
-        <> splits(p)
-
 # LAW: how TCP cuts the stream into reads never changes what the framer
-# sees: at every one of the 39 places to cut it, two reads frame exactly as
-# one does, down to the DataRow's cells.
+# sees: feeding a then b is feeding a ++ b, for every a, b and state.
 law feed_split:
-  {splits(38n) == List.replicate(F.Rx, 39n, F.feed(F.new(), stream())) : List<&2, F.Rx>}
+  for a: List<&2, U32>
+  for b: List<&2, U32>
+  for rx: F.Rx
+  {F.feed(F.feed(rx, a), b) == F.feed(rx, List.append(&2, U32, a, b)) : F.Rx}
 
+# LAW: the framer cuts each message whole, and a DataRow into its cells:
+# here a NULL and "hé".
 law feed_frames:
   {Pair.fst(List<&2, F.Frame>, F.Rx, F.take(F.feed(F.new(), stream())))
     == [F.Frame{90, [73]}, F.Frame.Row{[None{}, Some{[104, 195, 169]}]},
