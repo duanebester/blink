@@ -29,6 +29,7 @@ jobs:
       PGDATABASE: postgres
       BLINK_LIVE: "1"
       BLINK_AUTH: "postgres:blink blink_md5:md5pass"
+      BLINK_VERDICT: "1"
     steps:
       - uses: actions/checkout@v7
 
@@ -43,8 +44,24 @@ jobs:
           rm -rf bend bend.tgz
           echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
 
+      # For --verdict: Lean, and BendTT's kernel, which bend builds with it
+      # on first use.
+      - name: Cache Lean and BendTT's kernel
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            ~/.bend/bendtt
+          key: lean-4.34.0-bend-${{ env.BEND_VERSION }}
+
+      - name: Install Lean
+        run: |
+          [ -x ~/.elan/bin/lean ] || curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --no-modify-path --default-toolchain leanprover/lean4:v4.34.0
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
       - name: Tools
-        run: bend version && clang --version | head -1 && psql --version
+        run: bend version && lean --version && clang --version | head -1 && psql --version
 
       - name: An MD5 user
         run: psql -c "SET password_encryption = 'md5'" -c "CREATE USER blink_md5 PASSWORD 'md5pass'"

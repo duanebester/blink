@@ -33,10 +33,15 @@ queries, and extended ones with parameters, batched rows and cancellation.
 | [`io`](blink/io.bend) | The only effects: `run(host, port, user, password, database, queries)`, and a CancelRequest when a query times out |
 
 [`LAWS.bend`](LAWS.bend) states facts about the pure core and
-[`PROOF.bend`](PROOF.bend) proves them; Bend's compiler checks both. For
-example, `feed_split`: for every stream and every way TCP cuts it into
-reads, the frames are the same, and
-`scram_signature_checked`: a server that can't sign doesn't get a login.
+[`PROOF.bend`](PROOF.bend) proves them; Bend checks the proofs, and
+`--verdict` rechecks them with BendTT's kernel, which has a proof in Lean.
+Most hold for every input. For example, `receive_split`: for every
+connection and every way TCP cuts the stream into reads, the connection
+ends in the same state, with the same replies and bytes to send;
+`decode_keeps_order`: parallel decoding gives exactly the sequential result,
+for every lane count; and `scram_signature_checked`: SCRAM finishes only if
+the server's signature is exactly the expected one. The rest are byte-exact
+vectors.
 
 ## Quick start
 
@@ -106,8 +111,12 @@ It checks the laws, replays a recorded session
 and SCRAM against RFC vectors ([`tests/auth.bend`](tests/auth.bend)), and, if
 a server is reachable, compares Blink with `psql` on live queries
 (`BLINK_LIVE=1` fails instead of skipping; `BLINK_AUTH="user:password ..."`
-also tests those logins). GitHub Actions runs it against PostgreSQL 17, over
-SCRAM and MD5, on every push and pull request. `tests/fixtures/capture.py`
+also tests those logins). [`tests/aggregates.bend`](tests/aggregates.bend)
+fetches 100,000 rows of mixed types, simple and in batches, and checks the
+counts, sums and an MD5 of every value against Postgres's own aggregates.
+`BLINK_VERDICT=1` adds `--verdict`, which needs Lean 4.34.0. GitHub Actions
+runs it all against PostgreSQL 17, over SCRAM and MD5, on every push and pull
+request. `tests/fixtures/capture.py`
 re-records the session as `PGUSER=trusty PGDATABASE=world`.
 
 ## Performance

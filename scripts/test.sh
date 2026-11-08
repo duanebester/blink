@@ -8,7 +8,8 @@
 # PGPORT, PGUSER, PGPASSWORD and PGDATABASE, and compares Blink's rows with
 # `psql -qAt` on the same queries. BLINK_AUTH="user:password ..." also logs
 # in as each user, with its password and with a wrong one. BEND picks the
-# bend command.
+# bend command. BLINK_VERDICT=1 also rechecks the proofs with BendTT's
+# Lean-proven kernel (needs Lean 4.34.0 on PATH, as from elan).
 set -eu
 cd "$(dirname "$0")/.."
 BEND=${BEND:-bend}
@@ -23,6 +24,13 @@ if out=$($BEND PROOF.bend 2>&1) && printf '%s\n' "$out" | grep -q '^ALL PROOFS C
   pass "laws: bend PROOF.bend"
 else
   printf '%s\n' "$out"; fail "laws: bend PROOF.bend"
+fi
+if [ "${BLINK_VERDICT:-}" = 1 ]; then
+  if out=$($BEND PROOF.bend --verdict 2>&1) && printf '%s\n' "$out" | grep -q '^ALL PROOFS CHECK'; then
+    pass "laws: bend PROOF.bend --verdict (BendTT's kernel)"
+  else
+    printf '%s\n' "$out"; fail "laws: bend PROOF.bend --verdict"
+  fi
 fi
 
 # 2. a recorded session through the pure pipeline (no server), on both lanes
