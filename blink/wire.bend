@@ -260,6 +260,8 @@ def ready(body: List<&2, U32>) -> Backend:
 # A frame as the message it carries.
 def decode(f: F.Frame) -> Backend:
   match f:
+    case F.Frame.Row{cells}:
+      Backend.Row{cells}
     case F.Frame{+tag, +body}:
       match tag:
         case 82:

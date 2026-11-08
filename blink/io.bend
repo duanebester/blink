@@ -40,12 +40,25 @@ def send(s: Socket, p: List<&2, U32> & S.Conn, k: Next()) -> IO(Replies()):
     m : Socket & Result<&1, &1, (U32 & String) & List<&2, U32>, Unit> <- TCP.send_bytes(s, out)
     sent(m, c, k)
 
-def got(m: Socket & Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>>, c: S.Conn,
+# One read into a flat buffer: the bytes left over from the last read
+# (prefix), then up to max new ones, and how many in all. ms > 0 bounds the
+# wait: past it, Wait hands prefix back. The only effect Blink brings
+# itself; recv.c and recv.js implement it.
+def recv(sock: Socket, max: U32, ms: U32, prefix: List<&2, U32>) ->
+  IO(Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, Array<U32> & U32>>, List<&2, U32>>):
+  import "./recv.c"
+  import "./recv.js"
+
+def got.buf(s: Socket, p: Array<U32> & U32, c: S.Conn, k: Next()) -> IO(Replies()):
+  (a, n) = p
+  send(s, S.take(S.receive_buf(c, a, n)), k)
+
+def got(m: Socket & Result<&1, &1, U32 & String, Maybe<&1, Array<U32> & U32>>, c: S.Conn,
   k: Next()) -> IO(Replies()):
   (s, r) = m
   match r:
-    case Done{Some{chunk}}:
-      send(s, S.take(S.receive(c, chunk)), k)
+    case Done{Some{p}}:
+      got.buf(s, p, c, k)
     case Done{None{}}:
       done(s, S.closed(c, "the server closed the connection"))
     case Fail{(code, message)}:
@@ -81,26 +94,22 @@ def cancelled(host: String, port: U32, s: Socket, p: List<&2, U32> & S.Conn, k: 
     send(s, S.take(c), k)
 
 def polled(host: String, port: U32,
-  m: Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>>, Unit>,
+  m: Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, Array<U32> & U32>>, List<&2, U32>>,
   c: S.Conn, k: Next()) -> IO(Replies()):
   (s, p) = m
   match p:
     case Ready{r}:
       got((s, r), c, k)
-    case Wait{u}:
-      cancelled(host, port, s, S.cancel(c), k)
+    case Wait{rest}:
+      cancelled(host, port, s, S.cancel(S.receive(c, rest)), k)
 
-# A read, bounded by the running query's deadline if it has one.
-def read(+ms: U32, host: String, port: U32, s: Socket, c: S.Conn, k: Next()) -> IO(Replies()):
-  match ms:
-    case 0:
-      do IO<Replies()>:
-        m : Socket & Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>> <- TCP.recv_bytes(s, 65536)
-        got(m, c, k)
-    case _:
-      do IO<Replies()>:
-        m : Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>>, Unit> <- TCP.try_recv_bytes(s, 65536, ms)
-        polled(host, port, m, c, k)
+# A read, bounded by the running query's deadline if it has one (0 waits
+# for ever).
+def read(ms: U32, host: String, port: U32, s: Socket, p: List<&2, U32> & S.Conn, k: Next()) -> IO(Replies()):
+  (prefix, c) = p
+  do IO<Replies()>:
+    m : Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, Array<U32> & U32>>, List<&2, U32>> <- recv(s, 65536, ms, prefix)
+    polled(host, port, m, c, k)
 
 # One read per turn; the fuel only satisfies the termination check.
 def loop(fuel: Nat, +host: String, +port: U32, s: Socket, +c: S.Conn) -> IO(Replies()):
@@ -108,7 +117,7 @@ def loop(fuel: Nat, +host: String, +port: U32, s: Socket, +c: S.Conn) -> IO(Repl
     case 0n:
       done(s, S.closed(c, "out of fuel"))
     case 1n+f:
-      read(S.deadline(c), host, port, s, c, s2 => c2 => loop(f, host, port, s2, c2))
+      read(S.deadline(c), host, port, s, S.pending(c), s2 => c2 => loop(f, host, port, s2, c2))
 
 def connected(r: Result<&1, &1, U32 & String, Socket>, host: String, port: U32, c: S.Conn) -> IO(Replies()):
   match r:

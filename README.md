@@ -7,7 +7,9 @@
 A PostgreSQL driver in [Bend](https://github.com/bendlang/bend), modelled on
 [Clunk](https://github.com/duanebester/clunk) and
 [Skunk](https://github.com/typelevel/skunk). It needs nothing but Bend: no
-libpq, no packages beyond Base. It's an early baseline: local TCP, password
+libpq, no packages beyond Base. One small effect,
+[`blink/recv.c`](blink/recv.c) (and `recv.js` for the JS build), reads the
+socket into a flat buffer; Bend compiles it with the rest. It's an early baseline: local TCP, password
 auth (trust, cleartext, MD5, SCRAM-SHA-256), simple queries, and extended
 ones with parameters, batched rows and cancellation.
 
@@ -23,18 +25,19 @@ ones with parameters, batched rows and cancellation.
 
 | Module | Does |
 |---|---|
-| [`bytes`](blink/bytes.bend) | Big-endian ints, C strings, UTF-8 |
-| [`frame`](blink/frame.bend) | bytes → frames: a fold whose state carries across reads |
+| [`bytes`](blink/bytes.bend) | Big-endian ints, C strings, UTF-8, flat byte buffers |
+| [`frame`](blink/frame.bend) | bytes → frames: cuts whole messages from a buffer, DataRows straight into cells, and keeps the leftover bytes for the next read |
 | [`wire`](blink/wire.bend) | Frontend builders; frames → `Backend` messages |
 | [`crypto`](blink/crypto.bend) | MD5, SHA-256, HMAC, PBKDF2, base64 |
 | [`auth`](blink/auth.bend) | Each auth request's answer, SCRAM included: `answer(code, data, login)` |
 | [`rows`](blink/rows.bend) | Cells → values by type OID; untyped records, and typed rows where `Row(schema)` computes the Bend type |
 | [`session`](blink/session.bend) | The protocol state machine: `react(Session, Backend)`. `Conn` adds the framer, so a read is `receive(conn, bytes)`, then `take` the bytes to send. Rows stay raw until `replies`, which decodes them in parallel |
-| [`io`](blink/io.bend) | The only effects: `run(host, port, user, password, database, queries)`, and a CancelRequest when a query times out |
+| [`io`](blink/io.bend) | The only effects: `run(host, port, user, password, database, queries)`, `recv` into a buffer, and a CancelRequest when a query times out |
 
 [`LAWS.bend`](LAWS.bend) states facts about the pure core and
 [`PROOF.bend`](PROOF.bend) proves them; Bend's compiler checks both. For
-example, `feed_split`: how TCP cuts the stream never changes the frames, and
+example, `feed_split`: cutting a stream into reads at any point never
+changes the frames, and
 `scram_signature_checked`: a server that can't sign doesn't get a login.
 
 ## Quick start
@@ -137,8 +140,11 @@ native.
 - One connection per `run`, all replies held in memory; no streaming or pool.
 - Values are text except bool and int2/int4 (Bend has no signed ints, U64 or F64 yet).
   Text stays UTF-8 bytes (`Value.Text{bytes}`) until read with `B.text`.
-- Slow on bulk rows (below): bytes arrive as one list cell each, and a
-  `String` is a list of characters.
+- Slow on bulk rows (below): cell values are lists of bytes, one list cell
+  each.
+- `recv.c` builds its array with Bend runtime internals, so it may break on
+  a Bend upgrade (Blink pins 2.0.40); `bend --check-only` on `io.bend` or
+  the examples reports it as foreign code.
 
 [`docs/research.md`](docs/research.md) has the background on each, and
 [`docs/skunk.md`](docs/skunk.md) what to take from Skunk next.

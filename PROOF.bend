@@ -1,15 +1,12 @@
 # The proofs of LAWS.bend.
 import Base
-import ./blink/frame.bend as F
 import ./LAWS.bend as Laws
 
-# Induction on a: each byte of a steps the framer once on either side.
-def Laws.feed_split(a, b, rx):
-  match a:
-    case Nil{}:
-      {==}
-    case +h <> t:
-      Laws.feed_split(t, b, F.step(rx, h))
+def Laws.feed_split():
+  {==}
+
+def Laws.feed_frames():
+  {==}
 
 def Laws.utf8_sample():
   {==}

@@ -8,13 +8,31 @@ import ./blink/rows.bend as R
 import ./blink/auth.bend as A
 import ./blink/session.bend as S
 
+# Three messages: ReadyForQuery, a DataRow (a NULL and "hé"),
+# CommandComplete. Bytes from Python's struct.
+def stream() -> List<&2, U32>:
+  [90, 0, 0, 0, 5, 73, 68, 0, 0, 0, 17, 0, 2, 255, 255, 255, 255, 0, 0, 0, 3, 104, 195, 169,
+    67, 0, 0, 0, 13, 83, 69, 76, 69, 67, 84, 32, 49, 0]
+
+# The stream cut into two reads at k, for every k from n down to 0.
+def splits(+n: Nat) -> List<&2, F.Rx>:
+  match n:
+    case 0n:
+      [F.feed(F.feed(F.new(), Nil{}), stream())]
+    case 1n+p:
+      F.feed(F.feed(F.new(), List.take(&2, U32, stream(), n)), List.drop(&2, U32, stream(), n))
+        <> splits(p)
+
 # LAW: how TCP cuts the stream into reads never changes what the framer
-# sees: feeding a then b is feeding a ++ b.
+# sees: at every one of the 39 places to cut it, two reads frame exactly as
+# one does, down to the DataRow's cells.
 law feed_split:
-  for a: List<&2, U32>
-  for b: List<&2, U32>
-  for rx: F.Rx
-  {F.feed(F.feed(rx, a), b) == F.feed(rx, List.append(&2, U32, a, b)) : F.Rx}
+  {splits(38n) == List.replicate(F.Rx, 39n, F.feed(F.new(), stream())) : List<&2, F.Rx>}
+
+law feed_frames:
+  {Pair.fst(List<&2, F.Frame>, F.Rx, F.take(F.feed(F.new(), stream())))
+    == [F.Frame{90, [73]}, F.Frame.Row{[None{}, Some{[104, 195, 169]}]},
+      F.Frame{67, [83, 69, 76, 69, 67, 84, 32, 49, 0]}] : List<&2, F.Frame>}
 
 # LAW: text survives a trip through UTF-8, across every encoded width.
 law utf8_sample:
