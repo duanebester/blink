@@ -133,6 +133,15 @@ else
       fail "live: log in as $user"
     fi
   done
+  # 100,000 rows of mixed types: Blink's own counts, sums and MD5 of every
+  # value, simple and batched, must equal Postgres's and psql's.
+  if $BEND tests/aggregates.bend -o build/aggregates >/dev/null && ./build/aggregates >build/agg.out \
+    && want=$(./build/aggregates --sql | psql -X -qAt) && [ -n "$want" ] \
+    && [ "$(cut -c18- build/agg.out | sort -u)" = "$want" ] && [ "$(wc -l <build/agg.out)" = 3 ]; then
+    pass "live: aggregates over 100,000 rows match Postgres and psql"
+  else
+    cat build/agg.out; fail "live: aggregates"
+  fi
   printf '%s\n' "Tokyo has 13960000 people" "São Paulo has 12330000 people" \
     "Zürich has 421878 people" "total: 26711878" >build/cities.expected
   if $BEND examples/cities.bend 2>&1 | diff -u build/cities.expected -; then
