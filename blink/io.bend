@@ -40,12 +40,12 @@ def send(s: Socket, p: List<&2, U32> & S.Conn, k: Next()) -> IO(Replies()):
     m : Socket & Result<&1, &1, (U32 & String) & List<&2, U32>, Unit> <- TCP.send_bytes(s, out)
     sent(m, c, k)
 
-def got(m: Socket & Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>>, c: S.Conn,
+def got(m: Socket & Result<&1, &1, U32 & String, Maybe<&1, Bytes>>, c: S.Conn,
   k: Next()) -> IO(Replies()):
   (s, r) = m
   match r:
     case Done{Some{chunk}}:
-      send(s, S.take(S.receive(c, chunk)), k)
+      send(s, S.take(S.receive_buf(c, chunk)), k)
     case Done{None{}}:
       done(s, S.closed(c, "the server closed the connection"))
     case Fail{(code, message)}:
@@ -81,7 +81,7 @@ def cancelled(host: String, port: U32, s: Socket, p: List<&2, U32> & S.Conn, k: 
     send(s, S.take(c), k)
 
 def polled(host: String, port: U32,
-  m: Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>>, Unit>,
+  m: Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, Bytes>>, Unit>,
   c: S.Conn, k: Next()) -> IO(Replies()):
   (s, p) = m
   match p:
@@ -95,11 +95,11 @@ def read(+ms: U32, host: String, port: U32, s: Socket, c: S.Conn, k: Next()) -> 
   match ms:
     case 0:
       do IO<Replies()>:
-        m : Socket & Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>> <- TCP.recv_bytes(s, 65536)
+        m : Socket & Result<&1, &1, U32 & String, Maybe<&1, Bytes>> <- TCP.recv_buf(s, 65536)
         got(m, c, k)
     case _:
       do IO<Replies()>:
-        m : Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>>, Unit> <- TCP.try_recv_bytes(s, 65536, ms)
+        m : Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, Bytes>>, Unit> <- TCP.try_recv_buf(s, 65536, ms)
         polled(host, port, m, c, k)
 
 # One read per turn; the fuel only satisfies the termination check.

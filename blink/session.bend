@@ -259,6 +259,12 @@ def receive(c: Conn, chunk: List<&2, U32>) -> Conn:
     case Conn{rx, se}:
       receive.go(F.take(F.feed(rx, chunk)), se)
 
+# PROTOTYPE: one read as Base's proposed byte value.
+def receive_buf(c: Conn, chunk: Bytes) -> Conn:
+  match c:
+    case Conn{rx, se}:
+      receive.go(F.take(F.feed_bytes(rx, chunk)), se)
+
 # The bytes to send, and the connection without them.
 def take(c: Conn) -> List<&2, U32> & Conn:
   match c:

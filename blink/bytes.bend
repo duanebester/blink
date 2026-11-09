@@ -175,3 +175,61 @@ def utf8.finish(state: Utf8) -> String:
 def text(bytes: List<&2, U32>) -> String:
   utf8.finish(List.foldl(~&2, ~U32, ~Utf8, ~(state => b => utf8.byte(state, b)), bytes,
     Utf8{0, 0, 128, 191, ""}))
+
+# ---- buffers: bytes in a flat Array<U32>, one byte a slot, as io.bend
+# receives them. Reads hand the array back; an index wraps at its size.
+
+def slice.got(r: Array<U32> & U32, acc: List<&2, U32>) -> Array<U32> & List<&2, U32>:
+  (a, x) = r
+  (a, x <> acc)
+
+def slice.go(+j: Nat, +i: U32, r: Array<U32> & List<&2, U32>) -> Array<U32> & List<&2, U32>:
+  match j:
+    case 0n:
+      r
+    case 1n+q:
+      (a, acc) = r
+      slice.go(q, i, slice.got(Array.get(U32, a, (i + U32.from_nat(q) : U32)), acc))
+
+# The len bytes from i, as a list (built back to front: no reverse).
+def slice(a: Array<U32>, +i: U32, +len: U32) -> Array<U32> & List<&2, U32>:
+  slice.go(U32.to_nat(len), i, (a, Nil{}))
+
+def at32.d(+x: U32, r: Array<U32> & U32) -> Array<U32> & U32:
+  (a, y) = r
+  (a, ((x << 8n) .|. y : U32))
+
+def at32.c(+i: U32, +x: U32, r: Array<U32> & U32) -> Array<U32> & U32:
+  (a, y) = r
+  at32.d(((x << 8n) .|. y : U32), Array.get(U32, a, (i + 3 : U32)))
+
+def at32.b(+i: U32, +x: U32, r: Array<U32> & U32) -> Array<U32> & U32:
+  (a, y) = r
+  at32.c(i, ((x << 8n) .|. y : U32), Array.get(U32, a, (i + 2 : U32)))
+
+def at32.a(+i: U32, r: Array<U32> & U32) -> Array<U32> & U32:
+  (a, x) = r
+  at32.b(i, x, Array.get(U32, a, (i + 1 : U32)))
+
+# The big-endian word at i.
+def at32(a: Array<U32>, +i: U32) -> Array<U32> & U32:
+  at32.a(i, Array.get(U32, a, i))
+
+def depth(f: Nat, +n: U32, +p: U32) -> U32:
+  match f:
+    case 0n:
+      0
+    case 1n+g:
+      Bool.pick(U32, U32.is_lt(p, n), (1 + depth(g, n, (p * 2 : U32)) : U32), 0)
+
+def fill(xs: List<&2, U32>, +i: U32, a: Array<U32>) -> Array<U32>:
+  match xs:
+    case Nil{}:
+      a
+    case h <> t:
+      fill(t, (i + 1 : U32), Array.set(U32, a, i, h))
+
+# A list's bytes in a buffer, and how many there are.
+def buffer(+xs: List<&2, U32>) -> Array<U32> & U32:
+  +n = U32.from_nat(List.length(&2, U32, xs))
+  (fill(xs, 0, Array.new(U32, U32.to_nat(depth(32n, n, 1)), 0)), n)
