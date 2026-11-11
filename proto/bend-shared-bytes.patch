@@ -1,0 +1,578 @@
+diff --git a/bend2/base.bend b/bend2/base.bend
+index 9c0303f7..bbdac7ab 100644
+--- a/bend2/base.bend
++++ b/bend2/base.bend
+@@ -78,6 +78,13 @@ type Array<-T: Type> is Type:
+   ALeaf{value: T}
+   ANode{xs: Array<T>, ys: Array<T>}
+ 
++# Bytes: an immutable run of bytes, each 0..255. In the theory it is a
++# list, as a U32 is a Word; compiled to C it is a slice (offset, length) of
++# one flat, reference-counted block, so a copy or a slice shares the block
++# and costs no byte. Data: stored, copied and sent freely.
++type Bytes is Data:
++  Bytes{data: List<&2, U32>}
++
+ type Image is Data:
+   Pix{color: U32}
+   Qua{tl: Image, tr: Image, bl: Image, br: Image}
+@@ -468,6 +475,18 @@ def TCP.try_recv_bytes(sock: Socket, max: U32, ms: U32) ->
+   import "./effs/tcp_recv.c"
+   import "./effs/tcp_recv.js"
+ 
++# The bytes as Bytes: one block, filled from the read, with no list. A
++# slice of it shares it.
++def TCP.recv_buf(sock: Socket, max: U32) ->
++  IO(Socket & Result<&1, &1, U32 & String, Maybe<&1, Bytes>>):
++  import "./effs/tcp_recv.c"
++  import "./effs/tcp_recv.js"
++
++def TCP.try_recv_buf(sock: Socket, max: U32, ms: U32) ->
++  IO(Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, Bytes>>, Unit>):
++  import "./effs/tcp_recv.c"
++  import "./effs/tcp_recv.js"
++
+ def UDP.bind(host: String, port: U32) -> IO(Result<&1, &1, U32 & String, Socket>):
+   import "./effs/udp_bind.c"
+   import "./effs/udp_bind.js"
+@@ -2861,6 +2880,164 @@ def Array.map.seed(~T: Data, ~U: Data, ~f: T -> U, r: Array<T> & T) -> Array<U>:
+ def Array.map(~T: Data, ~U: Data, ~f: T -> U, a: Array<T>) -> Array<U>:
+   Array.map.seed(~T, ~U, ~f, Array.get(T, a, 0))
+ 
++# Bytes
++# -----
++
++# Every def here but Bytes.mask, Bytes.nth, Bytes.list_eq, Bytes.cells and
++# the UTF-8 steps runs natively in C (comp.ts's OPERATIONS), on the shared
++# block; its body is what it means, and what JS runs.
++
++def Bytes.mask(xs: List<&2, U32>) -> List<&2, U32>:
++  match xs:
++    case Nil{}:
++      Nil{}
++    case h <> t:
++      (h .&. 255 : U32) <> Bytes.mask(t)
++
++def Bytes.nth(xs: List<&2, U32>, i: Nat) -> U32:
++  match xs i:
++    case Nil{} _:
++      0
++    case h <> t 0n:
++      h
++    case h <> t 1n+p:
++      Bytes.nth(t, p)
++
++def Bytes.list_eq(xs: List<&2, U32>, ys: List<&2, U32>) -> Bool:
++  match xs ys:
++    case Nil{} Nil{}:
++      True{}
++    case x <> xt y <> yt:
++      Bool.and(U32.is_eq(x, y), Bytes.list_eq(xt, yt))
++    case _ _:
++      False{}
++
++def Bytes.cells(a: Array<U32>, acc: List<&2, U32>) -> List<&2, U32>:
++  match a:
++    case ALeaf{x}:
++      x <> acc
++    case ANode{xs, ys}:
++      Bytes.cells(xs, Bytes.cells(ys, acc))
++
++# A list's values, each mod 256, as Bytes. (Bytes{xs} with a value past
++# 255 stops a compiled program, as a Nat past its range does.)
++def Bytes.of_list(xs: List<&2, U32>) -> Bytes:
++  Bytes{Bytes.mask(xs)}
++
++def Bytes.empty() -> Bytes:
++  Bytes{Nil{}}
++
++# An Array<U32> builder's first n cells, each mod 256, frozen into Bytes.
++def Bytes.freeze(a: Array<U32>, n: Nat) -> Bytes:
++  Bytes.of_list(List.take(&2, U32, Bytes.cells(a, Nil{}), n))
++
++def Bytes.to_list(b: Bytes) -> List<&2, U32>:
++  match b:
++    case Bytes{data}:
++      data
++
++def Bytes.length(b: Bytes) -> Nat:
++  match b:
++    case Bytes{data}:
++      List.length(&2, U32, data)
++
++# The n bytes from o, fewer past the end. Compiled, a slice shares the
++# block: O(1), no byte copied.
++def Bytes.slice(b: Bytes, o: Nat, n: Nat) -> Bytes:
++  match b:
++    case Bytes{data}:
++      Bytes{List.take(&2, U32, List.drop(&2, U32, data, o), n)}
++
++def Bytes.take(b: Bytes, n: Nat) -> Bytes:
++  match b:
++    case Bytes{data}:
++      Bytes{List.take(&2, U32, data, n)}
++
++def Bytes.drop(b: Bytes, o: Nat) -> Bytes:
++  match b:
++    case Bytes{data}:
++      Bytes{List.drop(&2, U32, data, o)}
++
++# Byte i, 0 past the end; the big-endian U16 and U32 from byte i.
++def Bytes.get(b: Bytes, i: Nat) -> U32:
++  match b:
++    case Bytes{data}:
++      Bytes.nth(data, i)
++
++def Bytes.be16(b: Bytes, +i: Nat) -> U32:
++  match b:
++    case Bytes{+data}:
++      ((Bytes.nth(data, i) << 8n) .|. Bytes.nth(data, 1n+i) : U32)
++
++def Bytes.be32(b: Bytes, +i: Nat) -> U32:
++  match b:
++    case Bytes{+data}:
++      ((((Bytes.nth(data, i) << 24n) .|. (Bytes.nth(data, 1n+i) << 16n))
++        .|. (Bytes.nth(data, 2n+i) << 8n)) .|. Bytes.nth(data, 3n+i) : U32)
++
++def Bytes.concat(a: Bytes, b: Bytes) -> Bytes:
++  match a b:
++    case Bytes{xs} Bytes{ys}:
++      Bytes{List.append(&2, U32, xs, ys)}
++
++# The same bytes. Compiled, in a block of their own: a small slice kept
++# long need not keep its whole read alive.
++def Bytes.copy(b: Bytes) -> Bytes:
++  b
++
++def Bytes.eq(a: Bytes, b: Bytes) -> Bool:
++  match a b:
++    case Bytes{xs} Bytes{ys}:
++      Bytes.list_eq(xs, ys)
++
++# UTF-8 decoding with WHATWG's replacement policy, as Bend's own TCP text
++# codec decodes, including an incomplete last character. From Bend's
++# demos/io_http_fetch, by way of Blink.
++type Bytes.Utf8 is Data:
++  Bytes.Utf8{left: U32, code: U32, low: U32, high: U32, text: String}
++
++def Bytes.utf8.start(+b: U32, +text: String) -> Bytes.Utf8:
++  +left = Bool.pick(U32, U32.is_lt(b, 224), 1,
++    Bool.pick(U32, U32.is_lt(b, 240), 2, 3))
++  Bool.pick(Bytes.Utf8, U32.is_lt(b, 128),
++    Bytes.Utf8{0, 0, 128, 191, SCon{Chr{b}, text}},
++    Bool.pick(Bytes.Utf8, Bool.or(U32.is_lt(b, 194), U32.is_gt(b, 244)),
++      Bytes.Utf8{0, 0, 128, 191, SCon{Chr{65533}, text}},
++      Bytes.Utf8{left, U32.and(b, U32.shrn(63, U32.to_nat(left))),
++        Bool.pick(U32, U32.is_eq(b, 224), 160,
++          Bool.pick(U32, U32.is_eq(b, 240), 144, 128)),
++        Bool.pick(U32, U32.is_eq(b, 237), 159,
++          Bool.pick(U32, U32.is_eq(b, 244), 143, 191)), text}))
++
++def Bytes.utf8.more(+b: U32, +left: U32, +code: U32, +text: String, valid: Bool) -> Bytes.Utf8:
++  match valid:
++    case False{}:
++      Bytes.utf8.start(b, SCon{Chr{65533}, text})
++    case True{}:
++      +next = U32.sub(left, 1)
++      +value = U32.or(U32.shln(code, 6n), U32.and(b, 63))
++      Bytes.Utf8{next, value, 128, 191,
++        Bool.pick(String, U32.is_zero(next), SCon{Chr{value}, text}, text)}
++
++def Bytes.utf8.byte(state: Bytes.Utf8, +b: U32) -> Bytes.Utf8:
++  match state:
++    case Bytes.Utf8{left, code, low, high, text}:
++      match left:
++        case 0:
++          Bytes.utf8.start(b, text)
++        case _:
++          Bytes.utf8.more(b, left, code, text, Bool.and(U32.is_ge(b, low), U32.is_le(b, high)))
++
++def Bytes.utf8.finish(state: Bytes.Utf8) -> String:
++  match state:
++    case Bytes.Utf8{left, code, low, high, +text}:
++      String.reverse(Bool.pick(String, U32.is_zero(left), text, SCon{Chr{65533}, text}))
++
++# The bytes as UTF-8 text.
++def Bytes.utf8(b: Bytes) -> String:
++  Bytes.utf8.finish(List.foldl(~&2, ~U32, ~Bytes.Utf8, ~(state => x => Bytes.utf8.byte(state, x)),
++    Bytes.to_list(b), Bytes.Utf8{0, 0, 128, 191, ""}))
++
+ # Map
+ # ---
+ 
+diff --git a/bend2/comp.ts b/bend2/comp.ts
+index 7472084d..e0a12936 100644
+--- a/bend2/comp.ts
++++ b/bend2/comp.ts
+@@ -124,7 +124,8 @@ const ERRS = ("|*|*|out of memory: run again with a bigger span, as in"
+   + " array past the deepest block class 31 (depth + log2 words per"
+   + " cell)|a value has more than 2^24-1 live copies: keep fewer alive at"
+   + " once, or build it again for some of them (each build counts its own"
+-  + " copies)|expected a Nat host number: an integer from 0 to 2^53")
++  + " copies)|expected a Nat host number: an integer from 0 to 2^53|a Bytes"
++  + " value past 255: make Bytes from U32s with Bytes.of_list")
+   .replaceAll("*", "runtime fail-stop").split("|");
+ 
+ // Operations
+@@ -218,6 +219,13 @@ const OPERATIONS: Record<string, Intr> = Object.setPrototypeOf({
+     swap: "array_rmw($0, $1, () => ($2))",
+     size: "tup_new($0, $0.length)",
+   }).map(([k, JS]) => ["array_" + k, { C: null, JS }])),
++  // Base's Bytes (#1573): C only, so JS runs base.bend's lists
++  ...Object.fromEntries(Object.entries({
++    of_list: "$0", to_list: "$0", length: "$0", slice: "$0, $1, $2",
++    take: "$0, $1", drop: "$0, $1", get: "$0, $1", be16: "$0, $1",
++    be32: "$0, $1", concat: "$0, $1", copy: "$0", eq: "$0, $1", utf8: "$0",
++    freeze: "$0, $1",
++  }).map(([k, xs]) => ["bytes_" + k, { C: `bytes_${k}(e, ${xs})` }])),
+   array_clone: {
+     C:  ["$0", "blk_copy(e, $0)"],
+     JS: "tup_new($0, $0.slice())",
+@@ -730,7 +738,7 @@ function lay_of(A: HTerm | null): Lay {
+   const t = ty_adt(A);
+   return t === null ? BOX : WORDS[t.k] ?? memo(FL.lays, ty_key(t), (key) => {
+     const tld = tld_of(t.k);
+-    if (t.k === "Array" || t.k === "IO.OP" || tld?.$ !== "ADT"
++    if (t.k === "Array" || t.k === "IO.OP" || t.k === "Bytes" || tld?.$ !== "ADT"
+       || tld.c.some((c) => ctr_doms(c).some((F) => ty_holds(F, t.k)))) {
+       return BOX;
+     }
+@@ -2157,6 +2165,11 @@ function emit_ctr(sc: Scope, x: Of<"Ctr">, ty: HTerm | null,
+   }
+   const flds = ctr_flds(x);
+   const ctr = FL.book.ctrs[x.k];
++  if (adt.k === "Bytes" && !FL.js) {
++    const [xs] = emit_each(sc, flds, [BOX], ctr_doms(ctr, adt.x));
++    return val_new([`bytes_new_list(e, ${val_own(val_to(sc, xs, BOX))[0]}, 0)`],
++      BOX);
++  }
+   const word = WORDS[adt.k];
+   if (word || adt.k === "Array") {
+     if (adt.k === "Nat") {
+@@ -2581,6 +2594,12 @@ function emit_match(sc: Scope, x: Of<"Mat"> | Of<"Efq">,
+       if (k === "" || k === "_") {
+         return [k && mat_ops(is), h, () => [u]];
+       }
++      if (adt.k === "Bytes" && !FL.js) {
++        return ["1", h, () => {
++          val_own(u);
++          return [val_new([`bytes_to_list(e, ${sw})`], BOX)];
++        }];
++      }
+       if (adt.k === "Array") {
+         const el = lay_el(adt.x[0]);
+         const leaf = k === "ALeaf";
+@@ -3349,7 +3368,7 @@ typedef u32 __attribute__((may_alias)) u32a;
+ #define NAT_IMM   ((1ull << 48) - 1)
+ 
+ enum { ERR_RING = 1, ERR_TAGS, ERR_HEAP, ERR_FIDS, ERR_NATS, ERR_RFCS,
+-  ERR_DEEP, ERR_ARRS, ERR_CNTS };
++  ERR_DEEP, ERR_ARRS, ERR_CNTS, ERR_HOST, ERR_BYTE };
+ 
+ #define LINE      16
+ #define PAGE_BITS 7
+@@ -4191,6 +4210,220 @@ INLINE Term blk_new(Env e, bool arr, u64 d, u32 lgs, u32 n, THR Term* v) {
+   return term_blk(arr, c, l);
+ }
+ 
++// Bytes
++// =====
++
++// Base's Bytes (#1573). A value is a slice: an ARR block of 4 words,
++// [blob, off, len, 0], wrapped in a reference count at birth (as a Chan's
++// block is), so a shared Data node may hold it. Its blob is a BUF block
++// holding its length in word 0 and its bytes packed from word 1, wrapped
++// too, so slices and copies share it; term_drop frees each block with its
++// last reference. Every op consumes its Bytes arguments.
++
++#if !DEVICE
++
++static Term io_str(Env e, const char* p, u64 n);
++
++#ifdef CID(Con)
++#define bytes_is_con(t) (term_aux(t) == CID(Con))
++#else
++#define bytes_is_con(t) 0
++#endif
++
++// A new blob of n bytes, at *p (NULL if the heap is out).
++static Term blob_new(Env e, u64 n, u8** p) {
++  u32 w = cls_fit((u32)(1 + (n + 7) / 8));
++  u64 l = heap_alloc(e, w);
++  *p = NULL;
++  if (err_seen(e.mem)) {
++    return 0;
++  }
++  e.mem[l] = n;
++  *p = (u8*)(e.mem + l + 1);
++  return rfc_wrap(e, term_blk(false, w + 1, l), 1);
++}
++
++static Term bytes_make(Env e, Term blob, u64 off, u64 len) {
++  u64 l = heap_alloc(e, 2);
++  if (err_seen(e.mem)) {
++    return 0;
++  }
++  e.mem[l]     = blob;
++  e.mem[l + 1] = off;
++  e.mem[l + 2] = len;
++  e.mem[l + 3] = 0;
++  return rfc_wrap(e, term_blk(true, 2, l), 1);
++}
++
++// Where b's bytes start, and how many.
++static u8* bytes_ptr(Env e, Term b, u64* len) {
++  u64 l = term_peek(e.mem, b);
++  *len = e.mem[l + 2];
++  return (u8*)(e.mem + term_peek(e.mem, e.mem[l]) + 1) + e.mem[l + 1];
++}
++
++static Term bytes_of_mem(Env e, const u8* q, u64 n) {
++  u8* p;
++  Term blob = blob_new(e, n, &p);
++  if (p) {
++    memcpy(p, q, n);
++  }
++  return bytes_make(e, blob, 0, n);
++}
++
++// Bytes{xs} (a value past 255 stops) or, masked, Bytes.of_list(xs).
++static Term bytes_new_list(Env e, Term xs, u32 mask) {
++  u64 n = 0;
++  for (Term s = xs; bytes_is_con(s); n += 1) {
++    s = e.mem[term_peek(e.mem, s) + 1];
++  }
++  u8* p;
++  Term blob = blob_new(e, n, &p);
++  for (u64 i = 0; bytes_is_con(xs); i += 1) {
++    Term fb[2];
++    spare_free(e, cls_fit(2), ctr_take(e, xs, 2, fb));
++    if (!mask && fb[0] > 255) {
++      err_post(e.mem, ERR_BYTE);
++    }
++    if (p) {
++      p[i] = (u8)fb[0];
++    }
++    xs = fb[1];
++  }
++  return bytes_make(e, blob, 0, n);
++}
++
++#define bytes_of_list(e, xs) bytes_new_list(e, xs, 1)
++
++static Term bytes_to_list(Env e, Term b) {
++  u64 n;
++  u8* p = bytes_ptr(e, b, &n);
++#if defined(CID(Con)) && defined(CID(Nil))
++  Term xs = term_pak(CID(Nil), 0);
++  for (u64 i = n; i > 0; i -= 1) {
++    u64 nd = heap_alloc(e, 1);
++    e.mem[nd]     = p[i - 1];
++    e.mem[nd + 1] = CID_T[CID(Con)].hot ? rfc_seal(e, xs) : xs;
++    xs = term_ctr(CID(Con), nd);
++  }
++#else
++  Term xs = 0;
++#endif
++  term_sink(e, b);
++  return xs;
++}
++
++static u64 bytes_length(Env e, Term b) {
++  u64 n;
++  bytes_ptr(e, b, &n);
++  term_sink(e, b);
++  return n;
++}
++
++// b cut to its bytes [s, s + m): in place if this is its only reference.
++static Term bytes_cut(Env e, Term b, u64 s, u64 m) {
++  u64 l = term_peek(e.mem, b);
++  u64 off = e.mem[l + 1] + s;
++  if (term_rfc(b) && (a32_load(a32_at(e.mem, term_loc(b))) & RFC_CNT) == 1) {
++    e.mem[l + 1] = off;
++    e.mem[l + 2] = m;
++    return b;
++  }
++  Term blob = term_keep(e, e.mem[l], 1);
++  term_sink(e, b);
++  return bytes_make(e, blob, off, m);
++}
++
++static Term bytes_slice(Env e, Term b, u64 o, u64 n) {
++  u64 len = e.mem[term_peek(e.mem, b) + 2];
++  u64 s = o < len ? o : len;
++  return bytes_cut(e, b, s, n < len - s ? n : len - s);
++}
++
++#define bytes_take(e, b, n) bytes_slice(e, b, 0, n)
++
++static Term bytes_drop(Env e, Term b, u64 o) {
++  u64 len = e.mem[term_peek(e.mem, b) + 2];
++  u64 s = o < len ? o : len;
++  return bytes_cut(e, b, s, len - s);
++}
++
++static u64 bytes_be(Env e, Term b, u64 i, u32 k) {
++  u64 n;
++  u8* p = bytes_ptr(e, b, &n);
++  u32 r = 0;
++  for (u32 j = 0; j < k; j += 1) {
++    r = (r << 8) | (i + j < n ? p[i + j] : 0);
++  }
++  term_sink(e, b);
++  return r;
++}
++
++#define bytes_get(e, b, i)  bytes_be(e, b, i, 1)
++#define bytes_be16(e, b, i) bytes_be(e, b, i, 2)
++#define bytes_be32(e, b, i) bytes_be(e, b, i, 4)
++
++// An empty side costs nothing: the other is the answer.
++static Term bytes_concat(Env e, Term a, Term b) {
++  u64 an, bn;
++  u8* ap = bytes_ptr(e, a, &an);
++  u8* bp = bytes_ptr(e, b, &bn);
++  if (an == 0 || bn == 0) {
++    term_sink(e, an == 0 ? a : b);
++    return an == 0 ? b : a;
++  }
++  u8* p;
++  Term blob = blob_new(e, an + bn, &p);
++  if (p) {
++    memcpy(p, ap, an);
++    memcpy(p + an, bp, bn);
++  }
++  term_sink(e, a);
++  term_sink(e, b);
++  return bytes_make(e, blob, 0, an + bn);
++}
++
++static Term bytes_copy(Env e, Term b) {
++  u64 n;
++  u8* p = bytes_ptr(e, b, &n);
++  Term r = bytes_of_mem(e, p, n);
++  term_sink(e, b);
++  return r;
++}
++
++static u64 bytes_eq(Env e, Term a, Term b) {
++  u64 an, bn;
++  u8* ap = bytes_ptr(e, a, &an);
++  u8* bp = bytes_ptr(e, b, &bn);
++  u64 r = an == bn && memcmp(ap, bp, an) == 0;
++  term_sink(e, a);
++  term_sink(e, b);
++  return r;
++}
++
++static Term bytes_utf8(Env e, Term b) {
++  u64 n;
++  u8* p = bytes_ptr(e, b, &n);
++  Term r = io_str(e, (const char*)p, n);
++  term_sink(e, b);
++  return r;
++}
++
++static Term bytes_freeze(Env e, Term a, u64 n) {
++  u64 la = term_peek(e.mem, a);
++  u64 k = 1ull << blk_cls(a);
++  u64 m = n < k ? n : k;
++  u8* p;
++  Term blob = blob_new(e, m, &p);
++  for (u64 i = 0; p && i < m; i += 1) {
++    p[i] = (u8)*blk_ptr(e.mem, la, (u32)i);
++  }
++  term_sink(e, a);
++  return bytes_make(e, blob, 0, m);
++}
++
++#endif
++
+ // Ring
+ // ====
+ 
+@@ -5612,6 +5845,15 @@ static Term io_list(Env e, const char* p, u64 n) {
+ 
+ #endif
+ 
++#ifdef CID(Bytes)
++
++// A read as new Bytes.
++static Term io_bytes(Env e, const char* p, u64 n) {
++  return bytes_of_mem(e, (const u8*)p, n);
++}
++
++#endif
++
+ #define io_tup(e, a, b) io_node(e, CID(Tuple), a, b)
+ #define io_done(e, v)   io_box(e, CID(Done), v)
+ #define io_res(e, w, v) ((w)->code ? io_fail(e, (w)->code, NULL) \
+diff --git a/bend2/effs/tcp_recv.c b/bend2/effs/tcp_recv.c
+index a8e13719..997802d7 100644
+--- a/bend2/effs/tcp_recv.c
++++ b/bend2/effs/tcp_recv.c
+@@ -95,3 +95,36 @@ static void __attribute__((constructor)) tcp_try_recv_bytes_use(void) {
+ }
+ 
+ #endif
++
++// Base's Bytes (#1573): a read into one shared block, with no list.
++#ifdef CID(Bytes)
++
++static Term tcp_recv_buf_more(Env e, IoWork* w) {
++  return tcp_recv_with(e, w, tcp_recv_buf_more, io_bytes);
++}
++
++#endif
++
++#ifdef CID(TCP.recv_buf)
++
++Term tcp_recv_buf_run(Env e, Term* f, IoWork* w) {
++  return tcp_recv_start(e, f, w, tcp_recv_buf_more, 0);
++}
++
++static void __attribute__((constructor)) tcp_recv_buf_use(void) {
++  io_eff(CID(TCP.recv_buf), tcp_recv_buf_run);
++}
++
++#endif
++
++#ifdef CID(TCP.try_recv_buf)
++
++Term tcp_try_recv_buf_run(Env e, Term* f, IoWork* w) {
++  return tcp_recv_start(e, f, w, tcp_recv_buf_more, io_until(f[2]));
++}
++
++static void __attribute__((constructor)) tcp_try_recv_buf_use(void) {
++  io_eff(CID(TCP.try_recv_buf), tcp_try_recv_buf_run);
++}
++
++#endif
+diff --git a/bend2/effs/tcp_recv.js b/bend2/effs/tcp_recv.js
+index f488a7df..b30de00e 100644
+--- a/bend2/effs/tcp_recv.js
++++ b/bend2/effs/tcp_recv.js
+@@ -55,7 +55,22 @@ function tcp_try_recv_bytes(socket, max, ms, k) {
+   return tcp_recv_with(socket, max, k, io_list, io_until(ms));
+ }
+ 
++// Base's Bytes (#1573): JS runs the theory, so Bytes hold their list.
++function tcp_recv_buf_bytes(b, n) {
++  return { $: CID(Bytes), data: io_list(b, n) };
++}
++
++function tcp_recv_buf(socket, max, k) {
++  return tcp_recv_with(socket, max, k, tcp_recv_buf_bytes);
++}
++
++function tcp_try_recv_buf(socket, max, ms, k) {
++  return tcp_recv_with(socket, max, k, tcp_recv_buf_bytes, io_until(ms));
++}
++
+ io_eff(CID(TCP.recv), tcp_recv);
+ io_eff(CID(TCP.recv_bytes), tcp_recv_bytes);
+ io_eff(CID(TCP.try_recv), tcp_try_recv);
+ io_eff(CID(TCP.try_recv_bytes), tcp_try_recv_bytes);
++io_eff(CID(TCP.recv_buf), tcp_recv_buf);
++io_eff(CID(TCP.try_recv_buf), tcp_try_recv_buf);

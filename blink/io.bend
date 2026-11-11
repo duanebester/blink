@@ -95,11 +95,11 @@ def read(+ms: U32, host: String, port: U32, s: Socket, c: S.Conn, k: Next()) -> 
   match ms:
     case 0:
       do IO<Replies()>:
-        m : Socket & Result<&1, &1, U32 & String, Maybe<&1, Bytes>> <- TCP.recv_buf(s, 65536)
+        m : Socket & Result<&1, &1, U32 & String, Maybe<&1, Bytes>> <- TCP.recv_buf(s, 65528)
         got(m, c, k)
     case _:
       do IO<Replies()>:
-        m : Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, Bytes>>, Unit> <- TCP.try_recv_buf(s, 65536, ms)
+        m : Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, Bytes>>, Unit> <- TCP.try_recv_buf(s, 65528, ms)
         polled(host, port, m, c, k)
 
 # One read per turn; the fuel only satisfies the termination check.

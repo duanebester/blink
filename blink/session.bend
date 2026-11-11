@@ -39,7 +39,7 @@ type Reply is Data:
 # asks for the replies, which decodes them all at once, in parallel.
 type Item is Data:
   Item.Reply{r: Reply}
-  Item.Row{fields: List<&2, W.Field>, cells: List<&2, Maybe<&2, List<&2, U32>>>}
+  Item.Row{fields: List<&2, W.Field>, cells: List<&2, Maybe<&2, Bytes>>}
 
 # Every item so far, in chunks of up to 1024, so that decoding can split
 # them among lanes without a pass over every row. chunk is the newest, with
@@ -168,7 +168,7 @@ def columns(s: Session, +fs: List<&2, W.Field>) -> Session:
     case Session{phase, login, queue, run, key, fields, out, replies}:
       Session{phase, login, queue, run, key, fs, out, push(replies, Item.Reply{Reply.Columns{fs}})}
 
-def row(s: Session, cells: List<&2, Maybe<&2, List<&2, U32>>>) -> Session:
+def row(s: Session, cells: List<&2, Maybe<&2, Bytes>>) -> Session:
   match s:
     case Session{phase, login, queue, run, key, +fields, out, replies}:
       Session{phase, login, queue, run, key, fields, out, push(replies, Item.Row{fields, cells})}
@@ -253,17 +253,15 @@ def receive.go(p: List<&2, F.Frame> & F.Rx, se: Session) -> Conn:
   (frames, rx) = p
   Conn{rx, react_frames(se, frames)}
 
-# One read's bytes in.
-def receive(c: Conn, chunk: List<&2, U32>) -> Conn:
-  match c:
-    case Conn{rx, se}:
-      receive.go(F.take(F.feed(rx, chunk)), se)
-
-# PROTOTYPE: one read as Base's proposed byte value.
+# One read's bytes in, as the socket gives them: Base's Bytes.
 def receive_buf(c: Conn, chunk: Bytes) -> Conn:
   match c:
     case Conn{rx, se}:
       receive.go(F.take(F.feed_bytes(rx, chunk)), se)
+
+# One read's bytes in, as a list: what tests and laws use.
+def receive(c: Conn, chunk: List<&2, U32>) -> Conn:
+  receive_buf(c, Bytes.of_list(chunk))
 
 # The bytes to send, and the connection without them.
 def take(c: Conn) -> List<&2, U32> & Conn:

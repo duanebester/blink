@@ -45,6 +45,17 @@ else
   fail "replay (native)"
 fi
 
+# receive_split on the recorded session at every cut, on both lanes
+for lane in JS native; do
+  if [ $lane = JS ]; then out=$($BEND tests/split.bend 2>&1)
+  else out=$($BEND tests/split.bend -o build/split >/dev/null && ./build/split 2>&1); fi
+  if printf '%s\n' "$out" | grep -q ' cuts, 0 differ$'; then
+    pass "every cut of the session ($lane lane): $out"
+  else
+    printf '%s\n' "$out"; fail "every cut of the session ($lane lane)"
+  fi
+done
+
 # 3. hash, MAC and SCRAM vectors (no server), on both lanes
 if $BEND tests/auth.bend | diff -u tests/auth.expected -; then
   pass "auth vectors (JS lane)"

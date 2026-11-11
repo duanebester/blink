@@ -1,205 +1,125 @@
 # Framing: bytes -> frames. TCP delivers a stream, not messages: one read
-# may hold several messages, the end of one, or part of a header. Bytes
-# arrive in a flat buffer that starts at a message boundary: the shell puts
-# the bytes left over from the last read (rest) in front of each read. The
-# framer reads each 5-byte header, cuts the whole messages, and keeps what
-# is left for next time, so how the stream was cut never matters
-# (LAWS.bend: feed_split). Pure.
+# may hold several messages, the end of one, or part of a header. A read
+# arrives as Base's Bytes (bendlang/bend#1573): compiled, one shared block.
+# The framer reads each 5-byte header, cuts the whole messages, and keeps
+# the bytes after the last one, a slice, which the next read is joined to
+# (a copy only when something is left), so how the stream was cut never
+# matters (LAWS.bend: feed_split, for every stream and every cut). A
+# DataRow's cells are slices of the read: no cell byte is copied. Pure.
 import Base
-import ./bytes.bend as B
 
 # A backend message: its tag byte and its body, without the length. A
-# DataRow comes already cut into its cells (None is NULL), straight from
-# the buffer: rows are most of the bytes.
+# DataRow comes already cut into its cells (None is NULL), each a slice of
+# the read it came in.
 type Frame is Data:
   Frame{tag: U32, body: List<&2, U32>}
-  Frame.Row{cells: List<&2, Maybe<&2, List<&2, U32>>>}
+  Frame.Row{cells: List<&2, Maybe<&2, Bytes>>}
 
 # rest is the bytes after the last whole message; done is newest-first.
 type Rx is Data:
-  Rx{rest: List<&2, U32>, done: List<&2, Frame>}
+  Rx{rest: Bytes, done: List<&2, Frame>}
 
 def new() -> Rx:
-  Rx{Nil{}, Nil{}}
+  Rx{Bytes.empty(), Nil{}}
 
 # ---- a DataRow's cells: a count, then each cell's length (-1 is NULL)
-# and bytes
+# and bytes, all within its body
 
 type Cells is Data:
-  Cells{at: U32, cells: List<&2, Maybe<&2, List<&2, U32>>>}
+  Cells{at: Nat, cells: List<&2, Maybe<&2, Bytes>>}
 
-def cell.some(+i: U32, +len: U32, cs: List<&2, Maybe<&2, List<&2, U32>>>,
-  r: Array<U32> & List<&2, U32>) -> Array<U32> & Cells:
-  (a, xs) = r
-  (a, Cells{((i + 4 : U32) + len : U32), Some{xs} <> cs})
-
-def cell.len(null: Bool, +i: U32, +len: U32, a: Array<U32>,
-  cs: List<&2, Maybe<&2, List<&2, U32>>>) -> Array<U32> & Cells:
+def cell(null: Bool, +body: Bytes, +i: Nat, +len: U32, cs: List<&2, Maybe<&2, Bytes>>) -> Cells:
   match null:
     case True{}:
-      (a, Cells{(i + 4 : U32), None{} <> cs})
+      Cells{4n+i, None{} <> cs}
     case False{}:
-      cell.some(i, len, cs, B.slice(a, (i + 4 : U32), len))
+      +n = U32.to_nat(len)
+      Cells{Nat.add(4n+i, n), Some{Bytes.slice(body, 4n+i, n)} <> cs}
 
-def cell(+i: U32, cs: List<&2, Maybe<&2, List<&2, U32>>>, r: Array<U32> & U32) -> Array<U32> & Cells:
-  (a, +len) = r
-  cell.len(U32.is_eq(len, 4294967295), i, len, a, cs)
-
-# j cells, newest-first.
-def cells(j: Nat, r: Array<U32> & Cells) -> Array<U32> & Cells:
+# j cells from c's position, newest-first.
+def cells(j: Nat, +body: Bytes, c: Cells) -> Cells:
   match j:
     case 0n:
-      r
+      c
     case 1n+q:
-      (a, c) = r
       match c:
         case Cells{+i, cs}:
-          cells(q, cell(i, cs, B.at32(a, i)))
+          +len = Bytes.be32(body, i)
+          cells(q, body, cell(U32.is_eq(len, 4294967295), body, i, len, cs))
 
-def row.got(r: Array<U32> & Cells) -> Array<U32> & Frame:
-  (a, c) = r
+def row.got(c: Cells) -> Frame:
   match c:
     case Cells{i, cs}:
-      (a, Frame.Row{List.reverse(&2, Maybe<&2, List<&2, U32>>, cs)})
+      Frame.Row{List.reverse(&2, Maybe<&2, Bytes>, cs)}
 
-# The count is the first two bytes of the word at i.
-def row.n(+i: U32, r: Array<U32> & U32) -> Array<U32> & Frame:
-  (a, w) = r
-  row.got(cells(U32.to_nat((w >> 16n : U32)), (a, Cells{(i + 2 : U32), Nil{}})))
+def row(+body: Bytes) -> Frame:
+  row.got(cells(U32.to_nat(Bytes.be16(body, 0n)), body, Cells{2n, Nil{}}))
 
 # ---- whole messages
 
-# What is at a position: a whole message and where the next starts, or not
-# enough bytes for one.
+# A whole message from its tag and body: what it says depends on them
+# alone.
+def message(is_row: Bool, tag: U32, body: Bytes) -> Frame:
+  match is_row:
+    case True{}:
+      row(body)
+    case False{}:
+      Frame{tag, Bytes.to_list(body)}
+
+# What the bytes start with: a whole message and how many bytes it takes,
+# or not enough bytes for one.
 type Step is Data:
-  Step.Frame{frame: Frame, next: U32}
-  Step.Stop{at: U32}
+  Step.Frame{frame: Frame, size: Nat}
+  Step.Stop{}
 
-def step.got(+next: U32, r: Array<U32> & Frame) -> Array<U32> & Step:
-  (a, f) = r
-  (a, Step.Frame{f, next})
-
-def step.body(tag: U32, r: Array<U32> & List<&2, U32>) -> Array<U32> & Frame:
-  (a, body) = r
-  (a, Frame{tag, body})
-
-def step.kind(row: Bool, tag: U32, +i: U32, +len: U32, a: Array<U32>) -> Array<U32> & Frame:
-  match row:
-    case True{}:
-      row.n((i + 5 : U32), B.at32(a, (i + 5 : U32)))
-    case False{}:
-      step.body(tag, B.slice(a, (i + 5 : U32), (len - 4 : U32)))
-
-def step.tag(+i: U32, +len: U32, r: Array<U32> & U32) -> Array<U32> & Step:
-  (a, +tag) = r
-  step.got(((i + 1 : U32) + len : U32), step.kind(U32.is_eq(tag, 68), tag, i, len, a))
-
-def step.whole(short: Bool, a: Array<U32>, +i: U32, +len: U32) -> Array<U32> & Step:
+def step.whole(short: Bool, +b: Bytes, +w: Nat) -> Step:
   match short:
     case True{}:
-      (a, Step.Stop{i})
+      Step.Stop{}
     case False{}:
-      step.tag(i, len, Array.get(U32, a, i))
+      +tag = Bytes.get(b, 0n)
+      Step.Frame{message(U32.is_eq(tag, 68), tag, Bytes.slice(b, 5n, w)), 5n+w}
 
-# The length counts its own four bytes; less is malformed, read as 4.
-def step.len(+i: U32, +n: U32, r: Array<U32> & U32) -> Array<U32> & Step:
-  (a, got) = r
-  +len = U32.max(got, 4)
-  step.whole(U32.is_lt((n - i : U32), (len + 1 : U32)), a, i, len)
-
-def step.have(short: Bool, a: Array<U32>, +i: U32, +n: U32) -> Array<U32> & Step:
-  match short:
+# A message is its tag, its length's four bytes, which count themselves
+# (less is malformed, read as 4), and w more bytes, its body.
+def step.have(long: Bool, +b: Bytes) -> Step:
+  match long:
+    case False{}:
+      Step.Stop{}
     case True{}:
-      (a, Step.Stop{i})
-    case False{}:
-      step.len(i, n, B.at32(a, (i + 1 : U32)))
+      +w = Nat.sub(U32.to_nat(Bytes.be32(b, 1n)), 4n)
+      step.whole(Nat.is_lt(Bytes.length(b), 5n+w), b, w)
 
-# The step at i of a[0 .. n], for i <= n.
-def step(a: Array<U32>, +i: U32, +n: U32) -> Array<U32> & Step:
-  step.have(U32.is_lt((n - i : U32), 5), a, i, n)
+# A header is 5 bytes: 4 < the length.
+def step(+b: Bytes) -> Step:
+  step.have(Nat.is_lt(4n, Bytes.length(b)), b)
 
-def cut.end(done: List<&2, Frame>, r: Array<U32> & List<&2, U32>) -> Rx:
-  (a, rest) = r
-  Rx{rest, done}
+# Cuts whole messages off the front of b until too few bytes are left,
+# which stay for the next read. Each message is at least 5 bytes, so j,
+# b's length, is more steps than needed.
+def cut.go(j: Nat, b: Bytes, st: Step, done: List<&2, Frame>) -> Rx:
+  match j st:
+    case _ Step.Stop{}:
+      Rx{b, done}
+    case 0n Step.Frame{f, size}:
+      Rx{b, done}
+    case 1n+q Step.Frame{f, size}:
+      +rest = Bytes.drop(b, size)
+      cut.go(q, rest, step(rest), f <> done)
 
-def cut.stop(+n: U32, a: Array<U32>, st: Step, done: List<&2, Frame>) -> Rx:
-  match st:
-    case Step.Stop{+i}:
-      cut.end(done, B.slice(a, i, (n - i : U32)))
-    case Step.Frame{f, +i}:
-      cut.end(f <> done, B.slice(a, i, (n - i : U32)))
+def cut(+b: Bytes, done: List<&2, Frame>) -> Rx:
+  cut.go(Bytes.length(b), b, step(b), done)
 
-# A message is at least 5 bytes, so n / 5 + 1 steps are enough.
-def cut.go(j: Nat, +n: U32, r: Array<U32> & Step, done: List<&2, Frame>) -> Rx:
-  match j:
-    case 0n:
-      (a, st) = r
-      cut.stop(n, a, st, done)
-    case 1n+q:
-      (a, st) = r
-      match st:
-        case Step.Stop{+i}:
-          cut.stop(n, a, Step.Stop{i}, done)
-        case Step.Frame{f, +i}:
-          cut.go(q, n, step(a, i, n), f <> done)
-
-# A read's buffer in: a[0 .. n] is the rest from the last read (which the
-# caller took with rest) followed by the new bytes.
-def feed_buf(rx: Rx, a: Array<U32>, +n: U32) -> Rx:
+# A read's bytes in, after the bytes left from the last (concat costs
+# nothing when none are left).
+def feed_bytes(rx: Rx, chunk: Bytes) -> Rx:
   match rx:
     case Rx{rest, done}:
-      cut.go(U32.to_nat(((n / 5 : U32) + 1 : U32)), n, step(a, 0, n), done)
-
-# The bytes left over, for the next read to start with, and the framer
-# without them.
-def rest(rx: Rx) -> List<&2, U32> & Rx:
-  match rx:
-    case Rx{rest, done}:
-      (rest, Rx{Nil{}, done})
-
-def feed.go(p: Array<U32> & U32, rx: Rx) -> Rx:
-  (a, n) = p
-  feed_buf(rx, a, n)
-
-def feed.rest(p: List<&2, U32> & Rx, chunk: List<&2, U32>) -> Rx:
-  (rest, rx) = p
-  feed.go(B.buffer(List.append(&2, U32, rest, chunk)), rx)
-
-# ---- PROTOTYPE (bendlang/bend#1573): a read as Base's proposed byte
-# value. The bytes left from the last read go in front, copied with the
-# new ones into one buffer; with none left, the read's buffer is used as is.
-
-def copy.go(j: Nat, r: Array<U32> & U32, dst: Array<U32>, +i: U32, +off: U32) -> Array<U32>:
-  match j:
-    case 0n:
-      dst
-    case 1n+q:
-      (src, +x) = r
-      +k = (i + 1 : U32)
-      copy.go(q, Array.get(U32, src, k), Array.set(U32, dst, (off + i : U32), x), k, off)
-
-def joined(rest: List<&2, U32>, +m: U32, +len: U32, buf: Array<U32>) -> Array<U32> & U32:
-  +n = (m + len : U32)
-  (copy.go(U32.to_nat(len), Array.get(U32, buf, 0),
-    B.fill(rest, 0, Array.new(U32, U32.to_nat(B.depth(32n, n, 1)), 0)), 0, m), n)
-
-def feed_bytes.at(+m: U32, rest: List<&2, U32>, rx: Rx, bs: Bytes) -> Rx:
-  match m bs:
-    case 0 Bytes{+len, buf}:
-      feed_buf(rx, buf, len)
-    case _ Bytes{+len, buf}:
-      feed.go(joined(rest, m, len, buf), rx)
-
-def feed_bytes.go(p: List<&2, U32> & Rx, bs: Bytes) -> Rx:
-  (+rest, rx) = p
-  feed_bytes.at(U32.from_nat(List.length(&2, U32, rest)), rest, rx, bs)
-
-def feed_bytes(rx: Rx, bs: Bytes) -> Rx:
-  feed_bytes.go(rest(rx), bs)
+      cut(Bytes.concat(rest, chunk), done)
 
 # A read's bytes in, as a list: what tests and laws use.
 def feed(rx: Rx, chunk: List<&2, U32>) -> Rx:
-  feed.rest(rest(rx), chunk)
+  feed_bytes(rx, Bytes.of_list(chunk))
 
 # The complete frames so far, oldest first, and the framer without them.
 def take(rx: Rx) -> List<&2, Frame> & Rx:

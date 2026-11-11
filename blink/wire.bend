@@ -106,7 +106,7 @@ type Backend is Data:
   Backend.Key{pid: U32, secret: U32}
   Backend.Ready{status: U32}
   Backend.Columns{fields: List<&2, Field>}
-  Backend.Row{cells: List<&2, Maybe<&2, List<&2, U32>>>}
+  Backend.Row{cells: List<&2, Maybe<&2, Bytes>>}
   Backend.Complete{tag: String}
   Backend.Suspended{}
   Backend.CopyIn{}
@@ -176,6 +176,16 @@ def cells(body: List<&2, U32>) -> List<&2, Maybe<&2, List<&2, U32>>>:
       cells.go(U32.to_nat(B.u16(a, b)), cell(rest))
     case _:
       Nil{}
+
+# Cells as Bytes, as the framer cuts them from a read.
+def bytes_cells(cs: List<&2, Maybe<&2, List<&2, U32>>>) -> List<&2, Maybe<&2, Bytes>>:
+  match cs:
+    case Nil{}:
+      Nil{}
+    case None{} <> rest:
+      None{} <> bytes_cells(rest)
+    case Some{xs} <> rest:
+      Some{Bytes.of_list(xs)} <> bytes_cells(rest)
 
 # -- ErrorResponse and NoticeResponse: (type byte, cstring) fields up to a
 # NUL. S is the severity, C the SQLSTATE code and M the message. A fold, so
@@ -273,7 +283,7 @@ def decode(f: F.Frame) -> Backend:
         case 84:
           Backend.Columns{columns(body)}
         case 68:
-          Backend.Row{cells(body)}
+          Backend.Row{bytes_cells(cells(body))}
         case 67:
           Backend.Complete{first(B.cut_cstring(body))}
         case 69:

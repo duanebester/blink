@@ -10,211 +10,53 @@ import ./LAWS.bend as Laws
 
 # ---- the framer and the connection
 
-# Induction on a: each byte of a steps the framer once on either side.
-def Laws.feed_split(a, b, rx):
-  match a:
-    case Nil{}:
-      {==}
-    case +h <> t:
-      Laws.feed_split(t, b, F.step(rx, h))
+# feed_split and receive_split: at the end of this file, after the lemmas
+# on Bool they use.
 
-# receive_split: the framer only ever puts frames in front of those it
-# holds (step_app, feed_app, one case per phase), so frames handed over
-# after one read are those it would hold after both; then reverse and fold
-# over an append.
+# ---- Base's Bytes
 
-# rx with d after the frames it holds.
-def app(rx: F.Rx, d: List<&2, F.Frame>) -> F.Rx:
-  match rx:
-    case F.Rx{phase, tag, need, w, left, cur, cells, done}:
-      F.Rx{phase, tag, need, w, left, cur, cells, List.append(&2, F.Frame, done, d)}
-
-def body_app(last: Bool, tag: U32, need: U32, cur: List<&2, U32>, done: List<&2, F.Frame>,
-  d: List<&2, F.Frame>) ->
-  {F.body(last, tag, need, cur, List.append(&2, F.Frame, done, d)) == app(F.body(last, tag, need, cur, done), d) : F.Rx}:
-  match last:
-    case True{}:
-      {==}
-    case False{}:
-      {==}
-
-def row_app(last: Bool, phase: F.Phase, need: U32, w: U32, left: U32, cur: List<&2, U32>,
-  cells: List<&2, Maybe<&2, List<&2, U32>>>, done: List<&2, F.Frame>, d: List<&2, F.Frame>) ->
-  {F.row(last, phase, need, w, left, cur, cells, List.append(&2, F.Frame, done, d))
-    == app(F.row(last, phase, need, w, left, cur, cells, done), d) : F.Rx}:
-  match last:
-    case True{}:
-      {==}
-    case False{}:
-      {==}
-
-def cell_app(null: Bool, empty: Bool, len: U32, +need: U32, cells: List<&2, Maybe<&2, List<&2, U32>>>,
-  done: List<&2, F.Frame>, d: List<&2, F.Frame>) ->
-  {F.cell(null, empty, len, need, cells, List.append(&2, F.Frame, done, d))
-    == app(F.cell(null, empty, len, need, cells, done), d) : F.Rx}:
-  match null empty:
-    case True{} _:
-      row_app(U32.is_eq(need, 0), F.Phase.Size1{}, need, 0, 0, Nil{}, None{} <> cells, done, d)
-    case False{} True{}:
-      row_app(U32.is_eq(need, 0), F.Phase.Size1{}, need, 0, 0, Nil{}, Some{Nil{}} <> cells, done, d)
-    case False{} False{}:
-      row_app(U32.is_eq(need, 0), F.Phase.Cell{}, need, 0, len, Nil{}, cells, done, d)
-
-def bytes_app(full: Bool, +need: U32, left: U32, cur: List<&2, U32>,
-  cells: List<&2, Maybe<&2, List<&2, U32>>>, done: List<&2, F.Frame>, d: List<&2, F.Frame>) ->
-  {F.bytes(full, need, left, cur, cells, List.append(&2, F.Frame, done, d))
-    == app(F.bytes(full, need, left, cur, cells, done), d) : F.Rx}:
-  match full:
-    case True{}:
-      row_app(U32.is_eq(need, 0), F.Phase.Size1{}, need, 0, 0, Nil{}, Some{List.reverse(&2, U32, cur)} <> cells, done, d)
-    case False{}:
-      row_app(U32.is_eq(need, 0), F.Phase.Cell{}, need, 0, left, cur, cells, done, d)
-
-def length_app(row: Bool, empty: Bool, tag: U32, need: U32, done: List<&2, F.Frame>, d: List<&2, F.Frame>) ->
-  {F.length(row, empty, tag, need, List.append(&2, F.Frame, done, d))
-    == app(F.length(row, empty, tag, need, done), d) : F.Rx}:
-  match row empty:
-    case True{} True{}:
-      {==}
-    case True{} False{}:
-      {==}
-    case False{} True{}:
-      {==}
-    case False{} False{}:
-      {==}
-
-def word_app(+need: U32, phase: F.Phase, w: U32, cells: List<&2, Maybe<&2, List<&2, U32>>>,
-  done: List<&2, F.Frame>, d: List<&2, F.Frame>) ->
-  {F.word(need, phase, w, cells, List.append(&2, F.Frame, done, d))
-    == app(F.word(need, phase, w, cells, done), d) : F.Rx}:
-  row_app(U32.is_eq(need, 1), phase, (need - 1 : U32), w, 0, Nil{}, cells, done, d)
-
-# The framer only ever puts frames in front of those it holds.
-def step_app(rx: F.Rx, +b: U32, d: List<&2, F.Frame>) ->
-  {F.step(app(rx, d), b) == app(F.step(rx, b), d) : F.Rx}:
-  match rx:
-    case F.Rx{phase, +tag, +need, +w, +left, cur, cells, done}:
-      match phase:
-        case F.Phase.Tag{}:
-          {==}
-        case F.Phase.Len1{}:
-          {==}
-        case F.Phase.Len2{}:
-          {==}
-        case F.Phase.Len3{}:
-          {==}
-        case F.Phase.Len4{}:
-          +n = (U32.max(((w << 8n) .|. b : U32), 4) - 4 : U32)
-          length_app(U32.is_eq(tag, 68), U32.is_eq(n, 0), tag, n, done, d)
-        case F.Phase.Body{}:
-          body_app(U32.is_eq(need, 1), tag, (need - 1 : U32), b <> cur, done, d)
-        case F.Phase.Count1{}:
-          word_app(need, F.Phase.Count2{}, 0, cells, done, d)
-        case F.Phase.Count2{}:
-          word_app(need, F.Phase.Size1{}, 0, cells, done, d)
-        case F.Phase.Size1{}:
-          word_app(need, F.Phase.Size2{}, ((w << 8n) .|. b : U32), cells, done, d)
-        case F.Phase.Size2{}:
-          word_app(need, F.Phase.Size3{}, ((w << 8n) .|. b : U32), cells, done, d)
-        case F.Phase.Size3{}:
-          word_app(need, F.Phase.Size4{}, ((w << 8n) .|. b : U32), cells, done, d)
-        case F.Phase.Size4{}:
-          +len = ((w << 8n) .|. b : U32)
-          cell_app(U32.is_eq(len, 4294967295), U32.is_eq(len, 0), len, (need - 1 : U32), cells, done, d)
-        case F.Phase.Cell{}:
-          bytes_app(U32.is_eq(left, 1), (need - 1 : U32), (left - 1 : U32), b <> cur, cells, done, d)
-
-def feed_app(b: List<&2, U32>, +d: List<&2, F.Frame>, +rx: F.Rx) ->
-  {F.feed(app(rx, d), b) == app(F.feed(rx, b), d) : F.Rx}:
+def Laws.bytes_slice(b, o, n):
   match b:
-    case Nil{}:
-      {==}
-    case +h <> t:
-      %Equal.sym(F.Rx, F.step(app(rx, d), h), app(F.step(rx, h), d), step_app(rx, h, d))
-        : {F.feed(_, t) == app(F.feed(F.step(rx, h), t), d) : F.Rx}
-      feed_app(t, d, F.step(rx, h))
-
-def append_assoc(xs: List<&2, F.Frame>, +ys: List<&2, F.Frame>, +zs: List<&2, F.Frame>) ->
-  {List.append(&2, F.Frame, List.append(&2, F.Frame, xs, ys), zs)
-    == List.append(&2, F.Frame, xs, List.append(&2, F.Frame, ys, zs)) : List<&2, F.Frame>}:
-  match xs:
-    case Nil{}:
-      {==}
-    case +h <> t:
-      %append_assoc(t, ys, zs) : {h <> List.append(&2, F.Frame, List.append(&2, F.Frame, t, ys), zs) == h <> _ : List<&2, F.Frame>}
+    case Bytes{data}:
       {==}
 
-def rev_go(xs: List<&2, F.Frame>, +acc: List<&2, F.Frame>) ->
-  {List.reverse.go(&2, F.Frame, xs, acc)
-    == List.append(&2, F.Frame, List.reverse.go(&2, F.Frame, xs, Nil{}), acc) : List<&2, F.Frame>}:
-  match xs:
-    case Nil{}:
-      {==}
-    case +h <> +t:
-      +g = List.reverse.go(&2, F.Frame, t, Nil{})
-      %Equal.sym(List<&2, F.Frame>, List.reverse.go(&2, F.Frame, t, [h]), List.append(&2, F.Frame, g, [h]), rev_go(t, [h]))
-        : {List.reverse.go(&2, F.Frame, t, h <> acc) == List.append(&2, F.Frame, _, acc) : List<&2, F.Frame>}
-      %Equal.sym(List<&2, F.Frame>, List.append(&2, F.Frame, List.append(&2, F.Frame, g, [h]), acc),
-          List.append(&2, F.Frame, g, h <> acc), append_assoc(g, [h], acc))
-        : {List.reverse.go(&2, F.Frame, t, h <> acc) == _ : List<&2, F.Frame>}
-      rev_go(t, h <> acc)
-
-def go_app(xs: List<&2, F.Frame>, ys: List<&2, F.Frame>, acc: List<&2, F.Frame>) ->
-  {List.reverse.go(&2, F.Frame, List.append(&2, F.Frame, xs, ys), acc)
-    == List.reverse.go(&2, F.Frame, ys, List.reverse.go(&2, F.Frame, xs, acc)) : List<&2, F.Frame>}:
-  match xs:
-    case Nil{}:
-      {==}
-    case h <> t:
-      go_app(t, ys, h <> acc)
-
-def rev_app(+xs: List<&2, F.Frame>, +ys: List<&2, F.Frame>) ->
-  {List.reverse(&2, F.Frame, List.append(&2, F.Frame, xs, ys))
-    == List.append(&2, F.Frame, List.reverse(&2, F.Frame, ys), List.reverse(&2, F.Frame, xs)) : List<&2, F.Frame>}:
-  %Equal.sym(List<&2, F.Frame>, List.reverse.go(&2, F.Frame, List.append(&2, F.Frame, xs, ys), Nil{}),
-      List.reverse.go(&2, F.Frame, ys, List.reverse.go(&2, F.Frame, xs, Nil{})), go_app(xs, ys, Nil{}))
-    : {_ == List.append(&2, F.Frame, List.reverse(&2, F.Frame, ys), List.reverse(&2, F.Frame, xs)) : List<&2, F.Frame>}
-  rev_go(ys, List.reverse(&2, F.Frame, xs))
-
-def fold_app(xs: List<&2, F.Frame>, ys: List<&2, F.Frame>, s: S.Session) ->
-  {S.react_frames(s, List.append(&2, F.Frame, xs, ys)) == S.react_frames(S.react_frames(s, xs), ys) : S.Session}:
-  match xs:
-    case Nil{}:
-      {==}
-    case +h <> t:
-      fold_app(t, ys, S.react(s, W.decode(h)))
-
-def took(q: F.Rx, +dr: List<&2, F.Frame>, +se: S.Session) ->
-  {S.receive.go(F.take(q), S.react_frames(se, List.reverse(&2, F.Frame, dr)))
-    == S.receive.go(F.take(app(q, dr)), se) : S.Conn}:
-  match q:
-    case F.Rx{phase, tag, need, w, left, cur, cells, +dq}:
-      +rq = List.reverse(&2, F.Frame, dq)
-      +rr = List.reverse(&2, F.Frame, dr)
-      +lhs = {S.Conn{F.Rx{phase, tag, need, w, left, cur, cells, Nil{}}, S.react_frames(S.react_frames(se, rr), rq)} : S.Conn}
-      %Equal.sym(List<&2, F.Frame>, List.reverse(&2, F.Frame, List.append(&2, F.Frame, dq, dr)),
-          List.append(&2, F.Frame, rr, rq), rev_app(dq, dr))
-        : {lhs == S.Conn{F.Rx{phase, tag, need, w, left, cur, cells, Nil{}}, S.react_frames(se, _)} : S.Conn}
-      %Equal.sym(S.Session, S.react_frames(se, List.append(&2, F.Frame, rr, rq)),
-          S.react_frames(S.react_frames(se, rr), rq), fold_app(rr, rq, se))
-        : {lhs == S.Conn{F.Rx{phase, tag, need, w, left, cur, cells, Nil{}}, _} : S.Conn}
+def Laws.bytes_concat(a, b):
+  match a b:
+    case Bytes{xs} Bytes{ys}:
       {==}
 
-def split(r: F.Rx, +b: List<&2, U32>, +se: S.Session) ->
-  {S.receive(S.receive.go(F.take(r), se), b) == S.receive.go(F.take(F.feed(r, b)), se) : S.Conn}:
-  match r:
-    case F.Rx{+phase, +tag, +need, +w, +left, +cur, +cells, +dr}:
-      +q0 = {F.Rx{phase, tag, need, w, left, cur, cells, Nil{}} : F.Rx}
-      %Equal.sym(F.Rx, F.feed(app(q0, dr), b), app(F.feed(q0, b), dr), feed_app(b, dr, q0))
-        : {S.receive(S.receive.go(F.take(F.Rx{phase, tag, need, w, left, cur, cells, dr}), se), b)
-          == S.receive.go(F.take(_), se) : S.Conn}
-      took(F.feed(q0, b), dr, se)
+def Laws.bytes_copy(b):
+  {==}
 
-def Laws.receive_split(c, a, b):
-  match c:
-    case S.Conn{+rx, +se}:
-      %Laws.feed_split(a, b, rx) : {S.receive(S.receive.go(F.take(F.feed(rx, a)), se), b) == S.receive.go(F.take(_), se) : S.Conn}
-      split(F.feed(rx, a), b, se)
+def length_drop(xs: List<&2, U32>, o: Nat) ->
+  {List.length(&2, U32, List.drop(&2, U32, xs, o)) == Nat.sub(List.length(&2, U32, xs), o) : Nat}:
+  match xs o:
+    case Nil{} _:
+      {==}
+    case h <> t 0n:
+      {==}
+    case h <> t 1n+p:
+      length_drop(t, p)
+
+def length_take(xs: List<&2, U32>, n: Nat) ->
+  {List.length(&2, U32, List.take(&2, U32, xs, n)) == Nat.min(n, List.length(&2, U32, xs)) : Nat}:
+  match xs n:
+    case Nil{} 0n:
+      {==}
+    case Nil{} 1n+p:
+      {==}
+    case h <> t 0n:
+      {==}
+    case h <> t 1n+p:
+      %length_take(t, p) : {1n+List.length(&2, U32, List.take(&2, U32, t, p)) == 1n+_ : Nat}
+      {==}
+
+def Laws.bytes_slice_length(b, o, n):
+  match b:
+    case Bytes{+data}:
+      +d = List.drop(&2, U32, data, o)
+      %length_drop(data, o) : {List.length(&2, U32, List.take(&2, U32, d, n)) == Nat.min(n, _) : Nat}
+      length_take(d, n)
 
 # ---- decoding in lanes
 
@@ -521,3 +363,422 @@ def Laws.copy_in_bytes():
 
 def Laws.forged_scram_refused():
   {==}
+
+# ---- the framer and the connection: how TCP cuts the stream never
+# matters (feed_split, receive_split)
+#
+# The framer cuts whole messages off the front of its bytes. A message
+# whole in xs is the same message in xs ++ ys, and what is left after it
+# is the rest of xs then ys (k5), so cutting xs and then the rest ++ ys is
+# cutting xs ++ ys, given fuel enough (fi: any fuel past the length gives
+# the same). In Bytes' theory every step is a list operation; lemmas on
+# lists and Nat first.
+
+def nf_true(e: {True{} == False{} : Bool}) -> Empty:
+  false_true(Equal.sym(Bool, True{}, False{}, e))
+
+def pos_only(n: Nat) -> Type:
+  match n:
+    case 0n:
+      Empty
+    case 1n+p:
+      Unit
+
+def succ_zero(p: Nat, e: {1n+p == 0n : Nat}) -> Empty:
+  %e : pos_only(_)
+  Unit{}
+
+# a <= b, as Nat.sub(a, b) == 0.
+def le_refl(a: Nat) -> {Nat.sub(a, a) == 0n : Nat}:
+  match a:
+    case 0n:
+      {==}
+    case 1n+p:
+      le_refl(p)
+
+def le_succ(a: Nat, b: Nat, e: {Nat.sub(a, b) == 0n : Nat}) -> {Nat.sub(a, 1n+b) == 0n : Nat}:
+  match a b:
+    case 0n _:
+      {==}
+    case 1n+(+p) 0n:
+      Empty.absurd({Nat.sub(1n+p, 1n) == 0n : Nat}, succ_zero(p, e))
+    case 1n+p 1n+q:
+      le_succ(p, q, e)
+
+def le_trans(a: Nat, b: Nat, c: Nat, e1: {Nat.sub(a, b) == 0n : Nat}, e2: {Nat.sub(b, c) == 0n : Nat}) ->
+  {Nat.sub(a, c) == 0n : Nat}:
+  match a b c:
+    case 0n _ _:
+      {==}
+    case 1n+(+p) 0n _:
+      Empty.absurd({Nat.sub(1n+p, c) == 0n : Nat}, succ_zero(p, e1))
+    case 1n+(+p) 1n+(+q) 0n:
+      Empty.absurd({Nat.sub(1n+p, 0n) == 0n : Nat}, succ_zero(q, e2))
+    case 1n+p 1n+q 1n+r:
+      le_trans(p, q, r, e1, e2)
+
+def le4(+a: Nat) -> {Nat.sub(a, 4n+a) == 0n : Nat}:
+  le_succ(a, 3n+a, le_succ(a, 2n+a, le_succ(a, 1n+a, le_succ(a, a, le_refl(a)))))
+
+def drop_le(r: List<&2, U32>, w: Nat) ->
+  {Nat.sub(List.length(&2, U32, List.drop(&2, U32, r, w)), List.length(&2, U32, r)) == 0n : Nat}:
+  match r w:
+    case Nil{} _:
+      {==}
+    case h <> +t 0n:
+      le_refl(List.length(&2, U32, t))
+    case h <> +t 1n+(+p):
+      le_succ(List.length(&2, U32, List.drop(&2, U32, t, p)), List.length(&2, U32, t), drop_le(t, p))
+
+def drop_app_le(r: List<&2, U32>, w: Nat, +ys: List<&2, U32>) ->
+  {Nat.sub(List.length(&2, U32, List.append(&2, U32, List.drop(&2, U32, r, w), ys)),
+    List.length(&2, U32, List.append(&2, U32, r, ys))) == 0n : Nat}:
+  match r w:
+    case Nil{} _:
+      le_refl(List.length(&2, U32, ys))
+    case h <> +t 0n:
+      le_refl(List.length(&2, U32, List.append(&2, U32, t, ys)))
+    case h <> +t 1n+(+p):
+      le_succ(List.length(&2, U32, List.append(&2, U32, List.drop(&2, U32, t, p), ys)),
+        List.length(&2, U32, List.append(&2, U32, t, ys)), drop_app_le(t, p, ys))
+
+# What is left after a message fits the fuel left.
+def fuel_drop(+r: List<&2, U32>, +w: Nat, +q: Nat, e: {Nat.sub(4n+List.length(&2, U32, r), q) == 0n : Nat}) ->
+  {Nat.sub(List.length(&2, U32, List.drop(&2, U32, r, w)), q) == 0n : Nat}:
+  le_trans(List.length(&2, U32, List.drop(&2, U32, r, w)), List.length(&2, U32, r), q, drop_le(r, w),
+    le_trans(List.length(&2, U32, r), 4n+List.length(&2, U32, r), q, le4(List.length(&2, U32, r)), e))
+
+# A prefix long enough reads the same with anything after it.
+def take_app(r: List<&2, U32>, w: Nat, +ys: List<&2, U32>,
+  e: {Nat.is_lt(List.length(&2, U32, r), w) == False{} : Bool}) ->
+  {List.take(&2, U32, List.append(&2, U32, r, ys), w) == List.take(&2, U32, r, w) : List<&2, U32>}:
+  match r w:
+    case Nil{} 0n:
+      match ys:
+        case Nil{}:
+          {==}
+        case h <> t:
+          {==}
+    case Nil{} 1n+p:
+      Empty.absurd({List.take(&2, U32, ys, 1n+p) == Nil{} : List<&2, U32>}, nf_true(e))
+    case h <> t 0n:
+      {==}
+    case +h <> t 1n+p:
+      %take_app(t, p, ys, e) : {h <> List.take(&2, U32, List.append(&2, U32, t, ys), p) == h <> _ : List<&2, U32>}
+      {==}
+
+def drop_app(r: List<&2, U32>, w: Nat, +ys: List<&2, U32>,
+  e: {Nat.is_lt(List.length(&2, U32, r), w) == False{} : Bool}) ->
+  {List.drop(&2, U32, List.append(&2, U32, r, ys), w)
+    == List.append(&2, U32, List.drop(&2, U32, r, w), ys) : List<&2, U32>}:
+  match r w:
+    case Nil{} 0n:
+      match ys:
+        case Nil{}:
+          {==}
+        case h <> t:
+          {==}
+    case Nil{} 1n+p:
+      Empty.absurd({List.drop(&2, U32, ys, 1n+p) == ys : List<&2, U32>}, nf_true(e))
+    case h <> t 0n:
+      {==}
+    case h <> t 1n+p:
+      drop_app(t, p, ys, e)
+
+def lt_app(r: List<&2, U32>, w: Nat, +ys: List<&2, U32>,
+  e: {Nat.is_lt(List.length(&2, U32, r), w) == False{} : Bool}) ->
+  {Nat.is_lt(List.length(&2, U32, List.append(&2, U32, r, ys)), w) == False{} : Bool}:
+  match r w:
+    case Nil{} 0n:
+      match ys:
+        case Nil{}:
+          {==}
+        case h <> t:
+          {==}
+    case Nil{} 1n+p:
+      Empty.absurd({Nat.is_lt(List.length(&2, U32, ys), 1n+p) == False{} : Bool}, nf_true(e))
+    case h <> t 0n:
+      {==}
+    case h <> t 1n+p:
+      lt_app(t, p, ys, e)
+
+# A message's body length, read from bytes 1 to 4, and the message.
+def wd(x1: U32, x2: U32, x3: U32, x4: U32) -> Nat:
+  Nat.sub(U32.to_nat(Bytes.be32(Bytes{[0, x1, x2, x3, x4]}, 1n)), 4n)
+
+def msg(+x0: U32, r: List<&2, U32>, w: Nat) -> F.Frame:
+  F.message(U32.is_eq(x0, 68), x0, Bytes{List.take(&2, U32, List.drop(&2, U32, r, 0n), w)})
+
+# Fuel past the length is fuel enough: any two such cut the same.
+def fi5(c: Bool, +x0: U32, +x1: U32, +x2: U32, +x3: U32, +x4: U32, +r: List<&2, U32>, +w: Nat,
+  q: Nat, q2: Nat, +d: List<&2, F.Frame>,
+  ih: {F.cut.go(q, Bytes{List.drop(&2, U32, r, w)}, F.step(Bytes{List.drop(&2, U32, r, w)}), msg(x0, r, w) <> d)
+    == F.cut.go(q2, Bytes{List.drop(&2, U32, r, w)}, F.step(Bytes{List.drop(&2, U32, r, w)}), msg(x0, r, w) <> d) : F.Rx}) ->
+  {F.cut.go(1n+q, Bytes{x0 <> x1 <> x2 <> x3 <> x4 <> r}, F.step.whole(c, Bytes{x0 <> x1 <> x2 <> x3 <> x4 <> r}, w), d)
+    == F.cut.go(1n+q2, Bytes{x0 <> x1 <> x2 <> x3 <> x4 <> r}, F.step.whole(c, Bytes{x0 <> x1 <> x2 <> x3 <> x4 <> r}, w), d) : F.Rx}:
+  match c:
+    case True{}:
+      {==}
+    case False{}:
+      ih
+
+def fi(j: Nat, k: Nat, zs: List<&2, U32>, +d: List<&2, F.Frame>,
+  hj: {Nat.sub(List.length(&2, U32, zs), j) == 0n : Nat},
+  hk: {Nat.sub(List.length(&2, U32, zs), k) == 0n : Nat}) ->
+  {F.cut.go(j, Bytes{zs}, F.step(Bytes{zs}), d) == F.cut.go(k, Bytes{zs}, F.step(Bytes{zs}), d) : F.Rx}:
+  match j k zs:
+    case 1n+(+q) 1n+(+q2) +x0 <> +x1 <> +x2 <> +x3 <> +x4 <> +r:
+      +w = wd(x1, x2, x3, x4)
+      fi5(Nat.is_lt(List.length(&2, U32, r), w), x0, x1, x2, x3, x4, r, w, q, q2, d,
+        fi(q, q2, List.drop(&2, U32, r, w), msg(x0, r, w) <> d, fuel_drop(r, w, q, hj), fuel_drop(r, w, q2, hk)))
+    case 0n 1n+(+q2) +x0 <> +x1 <> +x2 <> +x3 <> +x4 <> +r:
+      +zs = {x0 <> x1 <> x2 <> x3 <> x4 <> r : List<&2, U32>}
+      Empty.absurd({F.cut.go(0n, Bytes{zs}, F.step(Bytes{zs}), d) == F.cut.go(1n+q2, Bytes{zs}, F.step(Bytes{zs}), d) : F.Rx},
+        succ_zero(4n+List.length(&2, U32, r), hj))
+    case 1n+(+q) 0n +x0 <> +x1 <> +x2 <> +x3 <> +x4 <> +r:
+      +zs = {x0 <> x1 <> x2 <> x3 <> x4 <> r : List<&2, U32>}
+      Empty.absurd({F.cut.go(1n+q, Bytes{zs}, F.step(Bytes{zs}), d) == F.cut.go(0n, Bytes{zs}, F.step(Bytes{zs}), d) : F.Rx},
+        succ_zero(4n+List.length(&2, U32, r), hk))
+    case 0n 0n _:
+      {==}
+    case _ _ Nil{}:
+      {==}
+    case _ _ x0 <> Nil{}:
+      {==}
+    case _ _ x0 <> x1 <> Nil{}:
+      {==}
+    case _ _ x0 <> x1 <> x2 <> Nil{}:
+      {==}
+    case _ _ x0 <> x1 <> x2 <> x3 <> Nil{}:
+      {==}
+
+# The first w bytes after a message's header read the same with anything
+# after them.
+def tk(r: List<&2, U32>, w: Nat, +ys: List<&2, U32>,
+  e: {Nat.is_lt(List.length(&2, U32, r), w) == False{} : Bool}) ->
+  {List.take(&2, U32, List.drop(&2, U32, List.append(&2, U32, r, ys), 0n), w)
+    == List.take(&2, U32, List.drop(&2, U32, r, 0n), w) : List<&2, U32>}:
+  match r:
+    case Nil{}:
+      match ys:
+        case Nil{}:
+          take_app(Nil{}, w, Nil{}, e)
+        case +y <> +yt:
+          take_app(Nil{}, w, y <> yt, e)
+    case h <> t:
+      take_app(h <> t, w, ys, e)
+
+# Cutting with enough fuel, then the rest ++ ys, is cutting zs ++ ys.
+def k5b(c2: Bool, l: {c2 == False{} : Bool},
+  +x0: U32, +x1: U32, +x2: U32, +x3: U32, +x4: U32, +r: List<&2, U32>, +ys: List<&2, U32>, +w: Nat,
+  +e: {Nat.is_lt(List.length(&2, U32, r), w) == False{} : Bool},
+  +q: Nat, +d: List<&2, F.Frame>,
+  ih: {F.feed_bytes(F.cut.go(q, Bytes{List.drop(&2, U32, r, w)}, F.step(Bytes{List.drop(&2, U32, r, w)}), msg(x0, r, w) <> d), Bytes{ys})
+    == F.cut(Bytes{List.append(&2, U32, List.drop(&2, U32, r, w), ys)}, msg(x0, r, w) <> d) : F.Rx}) ->
+  {F.feed_bytes(F.cut.go(q, Bytes{List.drop(&2, U32, r, w)}, F.step(Bytes{List.drop(&2, U32, r, w)}), msg(x0, r, w) <> d), Bytes{ys})
+    == F.cut.go(1n+(4n+List.length(&2, U32, List.append(&2, U32, r, ys))),
+      Bytes{x0 <> x1 <> x2 <> x3 <> x4 <> List.append(&2, U32, r, ys)},
+      F.step.whole(c2, Bytes{x0 <> x1 <> x2 <> x3 <> x4 <> List.append(&2, U32, r, ys)}, w), d) : F.Rx}:
+  match c2:
+    case True{}:
+      Empty.absurd({F.feed_bytes(F.cut.go(q, Bytes{List.drop(&2, U32, r, w)}, F.step(Bytes{List.drop(&2, U32, r, w)}), msg(x0, r, w) <> d), Bytes{ys})
+        == F.cut.go(1n+(4n+List.length(&2, U32, List.append(&2, U32, r, ys))),
+          Bytes{x0 <> x1 <> x2 <> x3 <> x4 <> List.append(&2, U32, r, ys)},
+          F.step.whole(True{}, Bytes{x0 <> x1 <> x2 <> x3 <> x4 <> List.append(&2, U32, r, ys)}, w), d) : F.Rx}, nf_true(l))
+    case False{}:
+      +ry = List.append(&2, U32, r, ys)
+      +dr = List.drop(&2, U32, r, w)
+      +rest = List.append(&2, U32, dr, ys)
+      +lhs = F.feed_bytes(F.cut.go(q, Bytes{dr}, F.step(Bytes{dr}), msg(x0, r, w) <> d), Bytes{ys})
+      +n = {4n+List.length(&2, U32, ry) : Nat}
+      %Equal.sym(List<&2, U32>, List.take(&2, U32, List.drop(&2, U32, ry, 0n), w),
+          List.take(&2, U32, List.drop(&2, U32, r, 0n), w), tk(r, w, ys, e))
+        : {lhs == F.cut.go(n, Bytes{List.drop(&2, U32, ry, w)}, F.step(Bytes{List.drop(&2, U32, ry, w)}),
+            F.message(U32.is_eq(x0, 68), x0, Bytes{_}) <> d) : F.Rx}
+      %Equal.sym(List<&2, U32>, List.drop(&2, U32, ry, w), rest, drop_app(r, w, ys, e))
+        : {lhs == F.cut.go(n, Bytes{_}, F.step(Bytes{_}), msg(x0, r, w) <> d) : F.Rx}
+      %Equal.sym(F.Rx, lhs, F.cut(Bytes{rest}, msg(x0, r, w) <> d), ih)
+        : {_ == F.cut.go(n, Bytes{rest}, F.step(Bytes{rest}), msg(x0, r, w) <> d) : F.Rx}
+      fi(List.length(&2, U32, rest), n, rest, msg(x0, r, w) <> d, le_refl(List.length(&2, U32, rest)),
+        le_trans(List.length(&2, U32, rest), List.length(&2, U32, ry), n, drop_app_le(r, w, ys), le4(List.length(&2, U32, ry))))
+
+def k5(c: Bool,
+  +x0: U32, +x1: U32, +x2: U32, +x3: U32, +x4: U32, +r: List<&2, U32>, +ys: List<&2, U32>,
+  +e: {Nat.is_lt(List.length(&2, U32, r), wd(x1, x2, x3, x4)) == c : Bool},
+  +q: Nat, +d: List<&2, F.Frame>,
+  ih: {F.feed_bytes(F.cut.go(q, Bytes{List.drop(&2, U32, r, wd(x1, x2, x3, x4))}, F.step(Bytes{List.drop(&2, U32, r, wd(x1, x2, x3, x4))}), msg(x0, r, wd(x1, x2, x3, x4)) <> d), Bytes{ys})
+    == F.cut(Bytes{List.append(&2, U32, List.drop(&2, U32, r, wd(x1, x2, x3, x4)), ys)}, msg(x0, r, wd(x1, x2, x3, x4)) <> d) : F.Rx}) ->
+  {F.feed_bytes(F.cut.go(1n+q, Bytes{x0 <> x1 <> x2 <> x3 <> x4 <> r}, F.step.whole(c, Bytes{x0 <> x1 <> x2 <> x3 <> x4 <> r}, wd(x1, x2, x3, x4)), d), Bytes{ys})
+    == F.cut(Bytes{x0 <> x1 <> x2 <> x3 <> x4 <> List.append(&2, U32, r, ys)}, d) : F.Rx}:
+  match c:
+    case True{}:
+      {==}
+    case False{}:
+      +w = wd(x1, x2, x3, x4)
+      k5b(Nat.is_lt(List.length(&2, U32, List.append(&2, U32, r, ys)), w), lt_app(r, w, ys, e),
+        x0, x1, x2, x3, x4, r, ys, w, e, q, d, ih)
+
+def K(j: Nat, zs: List<&2, U32>, +ys: List<&2, U32>, +d: List<&2, F.Frame>,
+  hj: {Nat.sub(List.length(&2, U32, zs), j) == 0n : Nat}) ->
+  {F.feed_bytes(F.cut.go(j, Bytes{zs}, F.step(Bytes{zs}), d), Bytes{ys}) == F.cut(Bytes{List.append(&2, U32, zs, ys)}, d) : F.Rx}:
+  match j zs:
+    case 1n+(+q) +x0 <> +x1 <> +x2 <> +x3 <> +x4 <> +r:
+      +w = wd(x1, x2, x3, x4)
+      k5(Nat.is_lt(List.length(&2, U32, r), w), x0, x1, x2, x3, x4, r, ys, {==}, q, d,
+        K(q, List.drop(&2, U32, r, w), ys, msg(x0, r, w) <> d, fuel_drop(r, w, q, hj)))
+    case 0n +x0 <> +x1 <> +x2 <> +x3 <> +x4 <> +r:
+      +zs = {x0 <> x1 <> x2 <> x3 <> x4 <> r : List<&2, U32>}
+      Empty.absurd({F.feed_bytes(F.cut.go(0n, Bytes{zs}, F.step(Bytes{zs}), d), Bytes{ys}) == F.cut(Bytes{List.append(&2, U32, zs, ys)}, d) : F.Rx},
+        succ_zero(4n+List.length(&2, U32, r), hj))
+    case _ Nil{}:
+      {==}
+    case _ x0 <> Nil{}:
+      {==}
+    case _ x0 <> x1 <> Nil{}:
+      {==}
+    case _ x0 <> x1 <> x2 <> Nil{}:
+      {==}
+    case _ x0 <> x1 <> x2 <> x3 <> Nil{}:
+      {==}
+
+def mask_app(xs: List<&2, U32>, +ys: List<&2, U32>) ->
+  {Bytes.mask(List.append(&2, U32, xs, ys)) == List.append(&2, U32, Bytes.mask(xs), Bytes.mask(ys)) : List<&2, U32>}:
+  match xs:
+    case Nil{}:
+      {==}
+    case +h <> t:
+      %mask_app(t, ys) : {(h .&. 255 : U32) <> Bytes.mask(List.append(&2, U32, t, ys)) == (h .&. 255 : U32) <> _ : List<&2, U32>}
+      {==}
+
+def u_assoc(xs: List<&2, U32>, +ys: List<&2, U32>, +zs: List<&2, U32>) ->
+  {List.append(&2, U32, List.append(&2, U32, xs, ys), zs)
+    == List.append(&2, U32, xs, List.append(&2, U32, ys, zs)) : List<&2, U32>}:
+  match xs:
+    case Nil{}:
+      {==}
+    case +h <> t:
+      %u_assoc(t, ys, zs) : {h <> List.append(&2, U32, List.append(&2, U32, t, ys), zs) == h <> _ : List<&2, U32>}
+      {==}
+
+def Laws.feed_split(a, b, rx):
+  match rx:
+    case F.Rx{+rest, +done}:
+      match rest:
+        case Bytes{+zs}:
+          +ma = Bytes.mask(a)
+          +mb = Bytes.mask(b)
+          +za = List.append(&2, U32, zs, ma)
+          %Equal.sym(List<&2, U32>, Bytes.mask(List.append(&2, U32, a, b)), List.append(&2, U32, ma, mb), mask_app(a, b))
+            : {F.feed(F.feed(F.Rx{Bytes{zs}, done}, a), b) == F.cut(Bytes{List.append(&2, U32, zs, _)}, done) : F.Rx}
+          %u_assoc(zs, ma, mb) : {F.feed(F.feed(F.Rx{Bytes{zs}, done}, a), b) == F.cut(Bytes{_}, done) : F.Rx}
+          K(List.length(&2, U32, za), za, mb, done, le_refl(List.length(&2, U32, za)))
+
+# receive_split: the framer only ever puts frames in front of those it
+# holds (cut_app), so frames handed over after one read are those it would
+# hold after both; then reverse and fold over an append. As on main.
+
+# rx with d after the frames it holds.
+def app(rx: F.Rx, d: List<&2, F.Frame>) -> F.Rx:
+  match rx:
+    case F.Rx{rest, done}:
+      F.Rx{rest, List.append(&2, F.Frame, done, d)}
+
+def cut_app(j: Nat, +b: Bytes, st: F.Step, +done: List<&2, F.Frame>, +d: List<&2, F.Frame>) ->
+  {F.cut.go(j, b, st, List.append(&2, F.Frame, done, d)) == app(F.cut.go(j, b, st, done), d) : F.Rx}:
+  match j st:
+    case _ F.Step.Stop{}:
+      {==}
+    case 0n F.Step.Frame{f, size}:
+      {==}
+    case 1n+q F.Step.Frame{+f, +size}:
+      +rest = Bytes.drop(b, size)
+      cut_app(q, rest, F.step(rest), f <> done, d)
+
+def feed_app(b: List<&2, U32>, +d: List<&2, F.Frame>, +rx: F.Rx) ->
+  {F.feed(app(rx, d), b) == app(F.feed(rx, b), d) : F.Rx}:
+  match rx:
+    case F.Rx{+rest, +done}:
+      +c = Bytes.concat(rest, Bytes.of_list(b))
+      cut_app(Bytes.length(c), c, F.step(c), done, d)
+
+def append_assoc(xs: List<&2, F.Frame>, +ys: List<&2, F.Frame>, +zs: List<&2, F.Frame>) ->
+  {List.append(&2, F.Frame, List.append(&2, F.Frame, xs, ys), zs)
+    == List.append(&2, F.Frame, xs, List.append(&2, F.Frame, ys, zs)) : List<&2, F.Frame>}:
+  match xs:
+    case Nil{}:
+      {==}
+    case +h <> t:
+      %append_assoc(t, ys, zs) : {h <> List.append(&2, F.Frame, List.append(&2, F.Frame, t, ys), zs) == h <> _ : List<&2, F.Frame>}
+      {==}
+
+def rev_go(xs: List<&2, F.Frame>, +acc: List<&2, F.Frame>) ->
+  {List.reverse.go(&2, F.Frame, xs, acc)
+    == List.append(&2, F.Frame, List.reverse.go(&2, F.Frame, xs, Nil{}), acc) : List<&2, F.Frame>}:
+  match xs:
+    case Nil{}:
+      {==}
+    case +h <> +t:
+      +g = List.reverse.go(&2, F.Frame, t, Nil{})
+      %Equal.sym(List<&2, F.Frame>, List.reverse.go(&2, F.Frame, t, [h]), List.append(&2, F.Frame, g, [h]), rev_go(t, [h]))
+        : {List.reverse.go(&2, F.Frame, t, h <> acc) == List.append(&2, F.Frame, _, acc) : List<&2, F.Frame>}
+      %Equal.sym(List<&2, F.Frame>, List.append(&2, F.Frame, List.append(&2, F.Frame, g, [h]), acc),
+          List.append(&2, F.Frame, g, h <> acc), append_assoc(g, [h], acc))
+        : {List.reverse.go(&2, F.Frame, t, h <> acc) == _ : List<&2, F.Frame>}
+      rev_go(t, h <> acc)
+
+def go_app(xs: List<&2, F.Frame>, ys: List<&2, F.Frame>, acc: List<&2, F.Frame>) ->
+  {List.reverse.go(&2, F.Frame, List.append(&2, F.Frame, xs, ys), acc)
+    == List.reverse.go(&2, F.Frame, ys, List.reverse.go(&2, F.Frame, xs, acc)) : List<&2, F.Frame>}:
+  match xs:
+    case Nil{}:
+      {==}
+    case h <> t:
+      go_app(t, ys, h <> acc)
+
+def rev_app(+xs: List<&2, F.Frame>, +ys: List<&2, F.Frame>) ->
+  {List.reverse(&2, F.Frame, List.append(&2, F.Frame, xs, ys))
+    == List.append(&2, F.Frame, List.reverse(&2, F.Frame, ys), List.reverse(&2, F.Frame, xs)) : List<&2, F.Frame>}:
+  %Equal.sym(List<&2, F.Frame>, List.reverse.go(&2, F.Frame, List.append(&2, F.Frame, xs, ys), Nil{}),
+      List.reverse.go(&2, F.Frame, ys, List.reverse.go(&2, F.Frame, xs, Nil{})), go_app(xs, ys, Nil{}))
+    : {_ == List.append(&2, F.Frame, List.reverse(&2, F.Frame, ys), List.reverse(&2, F.Frame, xs)) : List<&2, F.Frame>}
+  rev_go(ys, List.reverse(&2, F.Frame, xs))
+
+def fold_app(xs: List<&2, F.Frame>, ys: List<&2, F.Frame>, s: S.Session) ->
+  {S.react_frames(s, List.append(&2, F.Frame, xs, ys)) == S.react_frames(S.react_frames(s, xs), ys) : S.Session}:
+  match xs:
+    case Nil{}:
+      {==}
+    case +h <> t:
+      fold_app(t, ys, S.react(s, W.decode(h)))
+
+def took(q: F.Rx, +dr: List<&2, F.Frame>, +se: S.Session) ->
+  {S.receive.go(F.take(q), S.react_frames(se, List.reverse(&2, F.Frame, dr)))
+    == S.receive.go(F.take(app(q, dr)), se) : S.Conn}:
+  match q:
+    case F.Rx{rest, +dq}:
+      +rq = List.reverse(&2, F.Frame, dq)
+      +rr = List.reverse(&2, F.Frame, dr)
+      +lhs = {S.Conn{F.Rx{rest, Nil{}}, S.react_frames(S.react_frames(se, rr), rq)} : S.Conn}
+      %Equal.sym(List<&2, F.Frame>, List.reverse(&2, F.Frame, List.append(&2, F.Frame, dq, dr)),
+          List.append(&2, F.Frame, rr, rq), rev_app(dq, dr))
+        : {lhs == S.Conn{F.Rx{rest, Nil{}}, S.react_frames(se, _)} : S.Conn}
+      %Equal.sym(S.Session, S.react_frames(se, List.append(&2, F.Frame, rr, rq)),
+          S.react_frames(S.react_frames(se, rr), rq), fold_app(rr, rq, se))
+        : {lhs == S.Conn{F.Rx{rest, Nil{}}, _} : S.Conn}
+      {==}
+
+def split(r: F.Rx, +b: List<&2, U32>, +se: S.Session) ->
+  {S.receive(S.receive.go(F.take(r), se), b) == S.receive.go(F.take(F.feed(r, b)), se) : S.Conn}:
+  match r:
+    case F.Rx{+rest, +dr}:
+      +q0 = {F.Rx{rest, Nil{}} : F.Rx}
+      %Equal.sym(F.Rx, F.feed(app(q0, dr), b), app(F.feed(q0, b), dr), feed_app(b, dr, q0))
+        : {S.receive(S.receive.go(F.take(F.Rx{rest, dr}), se), b)
+          == S.receive.go(F.take(_), se) : S.Conn}
+      took(F.feed(q0, b), dr, se)
+
+def Laws.receive_split(c, a, b):
+  match c:
+    case S.Conn{+rx, +se}:
+      %Laws.feed_split(a, b, rx) : {S.receive(S.receive.go(F.take(F.feed(rx, a)), se), b) == S.receive.go(F.take(_), se) : S.Conn}
+      split(F.feed(rx, a), b, se)

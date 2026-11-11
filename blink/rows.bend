@@ -11,45 +11,52 @@ import ./wire.bend as W
 type Int is Data:
   Int{neg: Bool, abs: U32}
 
-# Text stays UTF-8 bytes until read: B.text turns it into a String.
+# Text stays UTF-8 bytes until read, a slice of the read it came in:
+# Bytes.utf8 turns it into a String.
 type Value is Data:
   Value.Null{}
   Value.Bool{b: Bool}
   Value.Int{n: Int}
-  Value.Text{bytes: List<&2, U32>}
+  Value.Text{bytes: Bytes}
 
 type Entry is Data:
   Entry{name: String, value: Value}
 
 # ---- values
 
-# "-42" -> Int{True, 42}; None if it doesn't parse.
-def int(bytes: List<&2, U32>) -> Maybe<&2, Int>:
-  match bytes:
-    case Nil{}:
+def int.sign(neg: Bool, +bytes: Bytes) -> Maybe<&2, Int>:
+  match neg:
+    case True{}:
+      Maybe.map(&2, U32, Int, n => Int{True{}, n}, U32.read(Bytes.utf8(Bytes.drop(bytes, 1n))))
+    case False{}:
+      Maybe.map(&2, U32, Int, n => Int{False{}, n}, U32.read(Bytes.utf8(bytes)))
+
+def int.at(empty: Bool, +bytes: Bytes) -> Maybe<&2, Int>:
+  match empty:
+    case True{}:
       None{}
-    case +h <> t:
-      match h:
-        case 45:
-          Maybe.map(&2, U32, Int, n => Int{True{}, n}, U32.read(B.text(t)))
-        case _:
-          Maybe.map(&2, U32, Int, n => Int{False{}, n}, U32.read(B.text(h <> t)))
+    case False{}:
+      int.sign(U32.is_eq(Bytes.get(bytes, 0n), 45), bytes)
 
-def bool(bytes: List<&2, U32>) -> Bool:
-  match bytes:
-    case Nil{}:
-      False{}
-    case h <> t:
-      U32.is_eq(h, 116)
+def int.of(+bytes: Bytes) -> Maybe<&2, Int>:
+  int.at(Nat.is_eq(Bytes.length(bytes), 0n), bytes)
 
-def value.int(m: Maybe<&2, Int>, +bytes: List<&2, U32>) -> Value:
+# "-42" -> Int{True, 42}; None if it doesn't parse.
+def int(bytes: Bytes) -> Maybe<&2, Int>:
+  int.of(bytes)
+
+# "t" is true; an empty cell reads as byte 0, false.
+def bool(bytes: Bytes) -> Bool:
+  U32.is_eq(Bytes.get(bytes, 0n), 116)
+
+def value.int(m: Maybe<&2, Int>, +bytes: Bytes) -> Value:
   match m:
     case Some{n}:
       Value.Int{n}
     case None{}:
       Value.Text{bytes}
 
-def value.text(+oid: U32, +bytes: List<&2, U32>) -> Value:
+def value.text(+oid: U32, +bytes: Bytes) -> Value:
   match oid:
     case 16:
       Value.Bool{bool(bytes)}
@@ -62,7 +69,7 @@ def value.text(+oid: U32, +bytes: List<&2, U32>) -> Value:
 
 # One column's value from its type OID and its cell (None is NULL). int8,
 # numeric, floats, dates and the rest stay text for now.
-def value(+oid: U32, cell: Maybe<&2, List<&2, U32>>) -> Value:
+def value(+oid: U32, cell: Maybe<&2, Bytes>) -> Value:
   match cell:
     case None{}:
       Value.Null{}
@@ -72,7 +79,7 @@ def value(+oid: U32, cell: Maybe<&2, List<&2, U32>>) -> Value:
 # ---- untyped records
 
 # A DataRow's cells, named and decoded by the RowDescription's fields.
-def record(fields: List<&2, W.Field>, cells: List<&2, Maybe<&2, List<&2, U32>>>) -> List<&2, Entry>:
+def record(fields: List<&2, W.Field>, cells: List<&2, Maybe<&2, Bytes>>) -> List<&2, Entry>:
   match fields cells:
     case W.Field{name, oid} <> fs c <> cs:
       Entry{name, value(oid, c)} <> record(fs, cs)
@@ -93,7 +100,7 @@ def show.value(v: Value) -> String:
     case Value.Int{Int{False{}, abs}}:
       U32.show(abs)
     case Value.Text{bytes}:
-      B.text(bytes)
+      Bytes.utf8(bytes)
 
 def show.go(es: List<&2, Entry>) -> String:
   match es:
@@ -132,17 +139,17 @@ def Row(cs: List<&2, Col>) -> Type:
     case c <> rest:
       ColT(c) & Row(rest)
 
-def col(c: Col, cell: Maybe<&2, List<&2, U32>>) -> ColT(c):
+def col(c: Col, cell: Maybe<&2, Bytes>) -> ColT(c):
   match c:
     case Col.Int{}:
-      Maybe.bind(&2, List<&2, U32>, Int, cell, int)
+      Maybe.bind(&2, Bytes, Int, cell, int)
     case Col.Text{}:
-      Maybe.map(&2, List<&2, U32>, String, B.text, cell)
+      Maybe.map(&2, Bytes, String, Bytes.utf8, cell)
     case Col.Bool{}:
-      Maybe.map(&2, List<&2, U32>, Bool, bool, cell)
+      Maybe.map(&2, Bytes, Bool, bool, cell)
 
 # A DataRow's cells as the schema's tuple; a missing cell is None.
-def decode(cs: List<&2, Col>, cells: List<&2, Maybe<&2, List<&2, U32>>>) -> Row(cs):
+def decode(cs: List<&2, Col>, cells: List<&2, Maybe<&2, Bytes>>) -> Row(cs):
   match cs cells:
     case Nil{} _:
       Unit{}

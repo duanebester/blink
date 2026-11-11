@@ -57,7 +57,7 @@ def render(v: R.Value) -> List<&2, U32>:
     case R.Value.Int{R.Int{False{}, abs}}:
       B.utf8(U32.show(abs))
     case R.Value.Text{bytes}:
-      bytes
+      Bytes.to_list(bytes)
 
 def line(es: List<&2, R.Entry>) -> List<&2, U32>:
   match es:
@@ -94,7 +94,7 @@ def truth(v: R.Value) -> U32:
 def octets(v: R.Value) -> U32:
   match v:
     case R.Value.Text{bytes}:
-      U32.from_nat(List.length(&2, U32, bytes))
+      U32.from_nat(Bytes.length(bytes))
     case _:
       0
 

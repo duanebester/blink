@@ -19,8 +19,8 @@ import ./blink/session.bend as S
 # LAW: how TCP cuts the stream into reads never changes what the framer
 # sees: feeding a then b is feeding a ++ b, for every a, b and state.
 law feed_split:
-  for a: List<&2, U32>
-  for b: List<&2, U32>
+  for +a: List<&2, U32>
+  for +b: List<&2, U32>
   for rx: F.Rx
   {F.feed(F.feed(rx, a), b) == F.feed(rx, List.append(&2, U32, a, b)) : F.Rx}
 
@@ -241,6 +241,37 @@ law copy_in_refused:
     == S.Session{1, login, queue, S.Run{simple, fetch, timeout, simple, stopped}, key, fields,
       List.append(&2, U32, out, W.copy_fail("Blink can't send COPY data")), log} : S.Session}
 
+# ---- Base's Bytes (bendlang/bend#1573), which the framer cuts cells
+# from. In the theory Bytes is its list, as a U32 is its Word, so a slice
+# is the list's take of its drop; compiled, it shares the read's block.
+
+# LAW: a slice's bytes are the bytes from o, at most n of them.
+law bytes_slice:
+  for b: Bytes
+  for o: Nat
+  for n: Nat
+  {Bytes.to_list(Bytes.slice(b, o, n))
+    == List.take(&2, U32, List.drop(&2, U32, Bytes.to_list(b), o), n) : List<&2, U32>}
+
+# LAW: and how many there are.
+law bytes_slice_length:
+  for b: Bytes
+  for +o: Nat
+  for +n: Nat
+  {Bytes.length(Bytes.slice(b, o, n)) == Nat.min(n, Nat.sub(Bytes.length(b), o)) : Nat}
+
+# LAW: concat is append.
+law bytes_concat:
+  for a: Bytes
+  for b: Bytes
+  {Bytes.to_list(Bytes.concat(a, b)) == List.append(&2, U32, Bytes.to_list(a), Bytes.to_list(b))
+    : List<&2, U32>}
+
+# LAW: a copy is the same value: only where its bytes live changes.
+law bytes_copy:
+  for b: Bytes
+  {Bytes.copy(b) == b : Bytes}
+
 # ---- vectors
 
 # Three messages: ReadyForQuery, a DataRow (a NULL and "hé"),
@@ -253,7 +284,7 @@ def stream() -> List<&2, U32>:
 # here a NULL and "hé".
 law feed_frames:
   {Pair.fst(List<&2, F.Frame>, F.Rx, F.take(F.feed(F.new(), stream())))
-    == [F.Frame{90, [73]}, F.Frame.Row{[None{}, Some{[104, 195, 169]}]},
+    == [F.Frame{90, [73]}, F.Frame.Row{[None{}, Some{Bytes{[104, 195, 169]}}]},
       F.Frame{67, [83, 69, 76, 69, 67, 84, 32, 49, 0]}] : List<&2, F.Frame>}
 
 # LAW: text survives a trip through UTF-8, across every encoded width.
@@ -277,7 +308,7 @@ law error_fields:
 # LAW: a schema decides a row's type: int4 "-42" and a NULL text decode to
 # exactly the tuple Row(schema) names.
 law typed_row:
-  {R.decode([R.Col.Int{}, R.Col.Text{}], [Some{[45, 52, 50]}, None{}])
+  {R.decode([R.Col.Int{}, R.Col.Text{}], [Some{Bytes{[45, 52, 50]}}, None{}])
     == (Some{R.Int{True{}, 42}}, (None{}, Unit{})) : R.Row([R.Col.Int{}, R.Col.Text{}])}
 
 # LAW: once a login fails, nothing the server sends next starts a query:
